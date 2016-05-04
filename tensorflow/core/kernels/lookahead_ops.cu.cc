@@ -20,25 +20,33 @@ class LookaheadOp<T, 1> : public OpKernel {
 
   void Compute(OpKernelContext* context) override {
     // Grab the input tensor
+    printf("ops gpu\n");
     const Tensor& input_tensor = context->input(0);
-    auto input = input_tensor.matrix<T>();
+    auto input = input_tensor.tensor<T, 3>();
     const Tensor& filter_tensor = context->input(1);
-    auto filter = filter_tensor.matrix<T>();
+    auto filter = filter_tensor.tensor<T, 3>();
     // Check that preserve_index is in range
 
     // Create an output tensor
     Tensor* output_tensor = NULL;
     OP_REQUIRES_OK(context, context->allocate_output(0, input_tensor.shape(),
                                                      &output_tensor));
-    auto output = output_tensor->template matrix<T>();
-    cudaStream_t stream;
-    cudaStreamCreate(&stream);
-    int dim_x = input_tensor.dim_size(0);
-    int dim_y = input_tensor.dim_size(1);
-    int filter_size = filter_tensor.dim_size(0);
-    kernel<T><<<dim_x, dim_y, 0, stream>>>(dim_x, dim_y, filter_size, &input(0, 0), &filter(0, 0), &output(0, 0));
-    cudaStreamSynchronize(stream);
-    cudaStreamDestroy(stream);
+    auto output = output_tensor->template tensor<T, 3>();
+    int batch_size = input_tensor.dim_size(0);
+    cudaStream_t stream[batch_size];
+    int dim_x = input_tensor.dim_size(1);
+    int dim_y = input_tensor.dim_size(2);
+    int filter_size = filter_tensor.dim_size(1);
+    for(int i = 0; i < batch_size; i++) {
+      cudaStreamCreate(&stream[i]);
+    }
+    for(int i = 0; i < batch_size; i++) {
+      kernel<T><<<dim_x, dim_y, 0, stream[i]>>>(dim_x, dim_y, filter_size, &input(i, 0, 0), &filter(i, 0, 0), &output(i, 0, 0));
+    }
+    for(int i = 0; i < batch_size; i++) {
+      cudaStreamSynchronize(stream[i]);
+      cudaStreamDestroy(stream[i]);
+    }
   }
 
  private:

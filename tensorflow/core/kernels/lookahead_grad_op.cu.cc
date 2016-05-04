@@ -37,14 +37,15 @@ class LookaheadGradInputOp<T, 1> : public OpKernel {
 
   void Compute(OpKernelContext* context) override {
     // Grab the input tensor
+    printf("grad input gpu\n");
     const Tensor& input_tensor = context->input(0);
-    auto input = input_tensor.matrix<T>();
+    auto input = input_tensor.tensor<T, 3>();
 
     const Tensor& filter_tensor = context->input(1);
-    auto filter = filter_tensor.matrix<T>();
+    auto filter = filter_tensor.tensor<T, 3>();
 
     const Tensor& backprop_output_tensor = context->input(2);
-    auto backprop_output = backprop_output_tensor.matrix<T>();
+    auto backprop_output = backprop_output_tensor.tensor<T, 3>();
 
     // Check that preserve_index is in range
 
@@ -52,16 +53,23 @@ class LookaheadGradInputOp<T, 1> : public OpKernel {
     Tensor* output_tensor = NULL;
     OP_REQUIRES_OK(context, context->allocate_output(0, input_tensor.shape(),
                                                      &output_tensor));
-    auto output = output_tensor->template matrix<T>();
+    auto output = output_tensor->template tensor<T, 3>();
 
-    cudaStream_t stream;
-    cudaStreamCreate(&stream);
-    int dim_x = input_tensor.dim_size(0);
-    int dim_y = input_tensor.dim_size(1);
-    int filter_size = filter_tensor.dim_size(0);
-    kernel_grad_input<T><<<dim_x, dim_y, 0, stream>>>(dim_x, dim_y, filter_size, &filter(0, 0), &backprop_output(0, 0), &output(0, 0));
-    cudaStreamSynchronize(stream);
-    cudaStreamDestroy(stream);
+    int batch_size = input_tensor.dim_size(0);
+    int dim_x = input_tensor.dim_size(1);
+    int dim_y = input_tensor.dim_size(2);
+    int filter_size = filter_tensor.dim_size(1);
+    cudaStream_t stream[batch_size];
+    for (int i = 0; i < batch_size; i++) {
+      cudaStreamCreate(&stream[i]);
+    }
+    for (int i = 0; i < batch_size; i++) {
+      kernel_grad_input<T><<<dim_x, dim_y, 0, stream[i]>>>(dim_x, dim_y, filter_size, &filter(i, 0, 0), &backprop_output(i, 0, 0), &output(i, 0, 0));
+    }
+    for (int i = 0; i < batch_size; i++) {
+      cudaStreamSynchronize(stream[i]);
+      cudaStreamDestroy(stream[i]);
+    }
   }
 
  private:
@@ -78,14 +86,15 @@ class LookaheadGradFilterOp<T, 1> : public OpKernel {
 
   void Compute(OpKernelContext* context) override {
     // Grab the input tensor
+    printf("grad filter gpu\n");
     const Tensor& input_tensor = context->input(0);
-    auto input = input_tensor.matrix<T>();
+    auto input = input_tensor.tensor<T, 3>();
 
     const Tensor& filter_tensor = context->input(1);
-    auto filter = filter_tensor.matrix<T>();
+    auto filter = filter_tensor.tensor<T, 3>();
 
     const Tensor& backprop_output_tensor = context->input(2);
-    auto backprop_output = backprop_output_tensor.matrix<T>();
+    auto backprop_output = backprop_output_tensor.tensor<T, 3>();
 
     // Check that preserve_index is in range
 
@@ -93,16 +102,23 @@ class LookaheadGradFilterOp<T, 1> : public OpKernel {
     Tensor* output_tensor = NULL;
     OP_REQUIRES_OK(context, context->allocate_output(0, filter_tensor.shape(),
                                                      &output_tensor));
-    auto output = output_tensor->template matrix<T>();
+    auto output = output_tensor->template tensor<T, 3>();
 
-    cudaStream_t stream;
-    cudaStreamCreate(&stream);
-    int dim_x = filter_tensor.dim_size(0);
-    int dim_y = filter_tensor.dim_size(1);
-    int input_size = input_tensor.dim_size(1);
-    kernel_grad_filter<T><<<dim_x, dim_y, 0, stream>>>(dim_x, dim_y, input_size, &input(0, 0), &backprop_output(0, 0), &output(0, 0));
-    cudaStreamSynchronize(stream);
-    cudaStreamDestroy(stream);
+    int batch_size = filter_tensor.dim_size(0);
+    int dim_x = filter_tensor.dim_size(1);
+    int dim_y = filter_tensor.dim_size(2);
+    int input_size = input_tensor.dim_size(2);
+    cudaStream_t stream[batch_size];
+    for (int i = 0; i < batch_size; i++) {
+      cudaStreamCreate(&stream[i]);
+    }
+    for (int i = 0; i < batch_size; i++) {
+      kernel_grad_filter<T><<<dim_x, dim_y, 0, stream[i]>>>(dim_x, dim_y, input_size, &input(i, 0, 0), &backprop_output(i, 0, 0), &output(i, 0, 0));
+    }
+    for (int i = 0; i < batch_size; i++) {
+      cudaStreamSynchronize(stream[i]);
+      cudaStreamDestroy(stream[i]);
+    }
   }
 
  private:

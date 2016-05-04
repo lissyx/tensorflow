@@ -57,32 +57,64 @@ def lookaheadgradfiltergpu(x1, x2, x3):
 
 @ops.RegisterShape("Lookaheadcpu")
 def _Lookaheadcpu(op):
-  inputs_shape = op.inputs[0].get_shape().with_rank(2)
+  inputs_shape = op.inputs[0].get_shape().with_rank(3)
   return [inputs_shape]
+
+@ops.RegisterGradient("Lookaheadcpu")
+def _Lookaheadcpu_grad(op, grad):
+  """The derivatives for deconvolution.
+
+  Args:
+    op: the Deconvolution op.
+    grad: the tensor representing the gradient w.r.t. the output
+
+  Returns:
+    the gradients w.r.t. the input and the filter
+  """
+  return [tf.contrib.lookahead.lookaheadgradinputcpu(
+              op.inputs[0],op.inputs[1],grad),
+          tf.contrib.lookahead.lookaheadgradfiltercpu(
+              op.inputs[0],op.inputs[1],grad)]
+
+@ops.RegisterGradient("Lookaheadgpu")
+def _Lookaheadgpu_grad(op, grad):
+  """The derivatives for deconvolution.
+
+  Args:
+    op: the Deconvolution op.
+    grad: the tensor representing the gradient w.r.t. the output
+
+  Returns:
+    the gradients w.r.t. the input and the filter
+  """
+  return [tf.contrib.lookahead.lookaheadgradinputgpu(
+              op.inputs[0],op.inputs[1],grad),
+          tf.contrib.lookahead.lookaheadgradfiltergpu(
+              op.inputs[0],op.inputs[1],grad)]
 
 @ops.RegisterShape("Lookaheadgpu")
 def _Lookaheadgpu(op):
-  inputs_shape = op.inputs[0].get_shape().with_rank(2)
+  inputs_shape = op.inputs[0].get_shape().with_rank(3)
   return [inputs_shape]
 
 @ops.RegisterShape("Lookaheadgradinputcpu")
 def _Lookaheadgradinputcpu(op):
-  inputs_shape = op.inputs[0].get_shape().with_rank(2)
+  inputs_shape = op.inputs[0].get_shape().with_rank(3)
   return [inputs_shape]
 
 @ops.RegisterShape("Lookaheadgradinputgpu")
 def _Lookaheadgradinputgpu(op):
-  inputs_shape = op.inputs[0].get_shape().with_rank(2)
+  inputs_shape = op.inputs[0].get_shape().with_rank(3)
   return [inputs_shape]
 
 @ops.RegisterShape("Lookaheadgradfiltercpu")
 def _Lookaheadgradfiltercpu(op):
-  inputs_shape = op.inputs[1].get_shape().with_rank(2)
+  inputs_shape = op.inputs[1].get_shape().with_rank(3)
   return [inputs_shape]
 
 @ops.RegisterShape("Lookaheadgradfiltergpu")
 def _Lookaheadgradfiltergpu(op):
-  inputs_shape = op.inputs[1].get_shape().with_rank(2)
+  inputs_shape = op.inputs[1].get_shape().with_rank(3)
   return [inputs_shape]
 
 @ops.RegisterGradient("Lookaheadgradinputcpu")
