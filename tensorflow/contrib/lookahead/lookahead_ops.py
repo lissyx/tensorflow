@@ -71,6 +71,8 @@ def _Lookaheadcpu_grad(op, grad):
   Returns:
     the gradients w.r.t. the input and the filter
   """
+  print(op.inputs[0].get_shape())
+  print(op.inputs[1].get_shape())
   return [tf.contrib.lookahead.lookaheadgradinputcpu(
               op.inputs[0],op.inputs[1],grad),
           tf.contrib.lookahead.lookaheadgradfiltercpu(
@@ -109,12 +111,12 @@ def _Lookaheadgradinputgpu(op):
 
 @ops.RegisterShape("Lookaheadgradfiltercpu")
 def _Lookaheadgradfiltercpu(op):
-  inputs_shape = op.inputs[1].get_shape().with_rank(3)
+  inputs_shape = op.inputs[1].get_shape().with_rank(2)
   return [inputs_shape]
 
 @ops.RegisterShape("Lookaheadgradfiltergpu")
 def _Lookaheadgradfiltergpu(op):
-  inputs_shape = op.inputs[1].get_shape().with_rank(3)
+  inputs_shape = op.inputs[1].get_shape().with_rank(2)
   return [inputs_shape]
 
 @ops.RegisterGradient("Lookaheadgradinputcpu")

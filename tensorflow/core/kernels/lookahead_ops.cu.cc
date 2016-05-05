@@ -20,11 +20,10 @@ class LookaheadOp<T, 1> : public OpKernel {
 
   void Compute(OpKernelContext* context) override {
     // Grab the input tensor
-    printf("ops gpu\n");
     const Tensor& input_tensor = context->input(0);
     auto input = input_tensor.tensor<T, 3>();
     const Tensor& filter_tensor = context->input(1);
-    auto filter = filter_tensor.tensor<T, 3>();
+    auto filter = filter_tensor.matrix<T>();
     // Check that preserve_index is in range
 
     // Create an output tensor
@@ -36,12 +35,12 @@ class LookaheadOp<T, 1> : public OpKernel {
     cudaStream_t stream[batch_size];
     int dim_x = input_tensor.dim_size(1);
     int dim_y = input_tensor.dim_size(2);
-    int filter_size = filter_tensor.dim_size(1);
+    int filter_size = filter_tensor.dim_size(0);
     for(int i = 0; i < batch_size; i++) {
       cudaStreamCreate(&stream[i]);
     }
     for(int i = 0; i < batch_size; i++) {
-      kernel<T><<<dim_x, dim_y, 0, stream[i]>>>(dim_x, dim_y, filter_size, &input(i, 0, 0), &filter(i, 0, 0), &output(i, 0, 0));
+      kernel<T><<<dim_x, dim_y, 0, stream[i]>>>(dim_x, dim_y, filter_size, &input(i, 0, 0), &filter(0, 0), &output(i, 0, 0));
     }
     for(int i = 0; i < batch_size; i++) {
       cudaStreamSynchronize(stream[i]);
