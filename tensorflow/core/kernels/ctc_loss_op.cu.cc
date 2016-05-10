@@ -15,19 +15,15 @@ limitations under the License.
 
 // See docs in ../ops/ctc_ops.cc.
 
-#include "tensorflow/core/util/ctc/ctc_loss_calculator.h"
-#include "tensorflow/core/framework/op.h"
-#include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/framework/types.h"
-#include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/platform/macros.h"
-#include "tensorflow/core/util/sparse/sparse_tensor.h"
+#include "tensorflow/core/kernels/ctc_loss_op.h"
+#include "tensorflow/core/kernels/warp-ctc/tests/test.h"
 
 namespace tensorflow {
 
-typedef Eigen::ThreadPoolDevice CPUDevice;
+typedef Eigen::GpuDevice GPUDevice;
 
-class CTCLossOp : public OpKernel {
+template<>
+class CTCLossOp<GPUDevice> : public OpKernel {
   typedef Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic,
                                          Eigen::RowMajor> >
       InputMap;
@@ -44,7 +40,82 @@ class CTCLossOp : public OpKernel {
   }
 
   void Compute(OpKernelContext* ctx) override {
-    const Tensor* inputs;
+    printf("gpu ctc\n");
+    const int alphabet_size = 5;
+    const int T = 2;
+
+    std::vector<float> activations = {0.1, 0.6, 0.1, 0.1, 0.1,
+                                      0.1, 0.1, 0.6, 0.1, 0.1};
+
+    // Calculate the score analytically
+    float expected_score;
+    {
+        std::vector<float> probs(activations.size());
+        softmax(activations.data(), alphabet_size, T, probs.data());
+
+        // Score calculation is specific to the given activations above
+        expected_score = probs[1] * probs[7];
+    }
+
+    cudaStream_t stream;
+    throw_on_error(cudaStreamCreate(&stream),
+                   "cudaStreamCreate");
+
+    float *activations_gpu;
+    throw_on_error(cudaMalloc(&activations_gpu,
+                   activations.size() * sizeof(float)),
+                   "cudaMalloc");
+    throw_on_error(cudaMemcpyAsync(activations_gpu, activations.data(),
+                                   activations.size() * sizeof(float),
+                                   cudaMemcpyHostToDevice, stream),
+                   "cudaMemcpyAsync");
+
+    std::vector<int> labels = {1, 2};
+    std::vector<int> label_lengths = {2};
+    std::vector<int> lengths;
+    lengths.push_back(T);
+
+    float score;
+
+    ctcComputeInfo info;
+    info.loc = CTC_GPU;
+    info.stream = stream;
+
+    size_t gpu_alloc_bytes;
+    throw_on_error(get_workspace_size(label_lengths.data(), lengths.data(),
+                                      alphabet_size, lengths.size(), info,
+                                      &gpu_alloc_bytes),
+                   "Error: get_workspace_size in small_test");
+
+    char *ctc_gpu_workspace;
+    throw_on_error(cudaMalloc(&ctc_gpu_workspace, gpu_alloc_bytes),
+                   "cudaMalloc");
+
+    throw_on_error(compute_ctc_loss(activations_gpu, NULL,
+                                    labels.data(), label_lengths.data(),
+                                    lengths.data(),
+                                    alphabet_size,
+                                    lengths.size(),
+                                    &score,
+                                    ctc_gpu_workspace,
+                                    info),
+                   "Error: compute_ctc_loss in small_test");
+
+    score = std::exp(-score);
+    const float eps = 1e-6;
+
+    const float lb = expected_score - eps;
+    const float ub = expected_score + eps;
+
+    throw_on_error(cudaFree(activations_gpu),
+                   "cudaFree");
+    throw_on_error(cudaFree(ctc_gpu_workspace),
+                   "cudaFree");
+    throw_on_error(cudaStreamDestroy(stream),
+                   "cudaStreamDestroy");
+    if (score > lb && score < ub) printf("true\n");
+    else printf("false\n");
+    /*const Tensor* inputs;
     const Tensor* labels_indices;
     const Tensor* labels_values;
     const Tensor* seq_len;
@@ -143,15 +214,14 @@ class CTCLossOp : public OpKernel {
     OP_REQUIRES_OK(ctx, ctc_loss_calculator.CalculateLoss(
                             seq_len_t, labels_t, input_list_t,
                             preprocess_collapse_repeated_, ctc_merge_repeated_,
-                            &loss_t, &gradient_list_t));
+                            &loss_t, &gradient_list_t));*/
   }
 
  private:
   bool preprocess_collapse_repeated_;
   bool ctc_merge_repeated_;
-  TF_DISALLOW_COPY_AND_ASSIGN(CTCLossOp);
 };
 
-//REGISTER_KERNEL_BUILDER(Name("CTCLoss").Device(DEVICE_CPU), CTCLossOp);
+REGISTER_KERNEL_BUILDER(Name("CTCLoss").Device(DEVICE_GPU), CTCLossOp<GPUDevice>);
 
 }  // end namespace tensorflow
