@@ -41,39 +41,52 @@ class CTCLossOp<GPUDevice> : public OpKernel {
 
   void Compute(OpKernelContext* ctx) override {
     printf("gpu ctc\n");
-    const int alphabet_size = 5;
-    const int T = 2;
-
-    std::vector<float> activations = {0.1, 0.6, 0.1, 0.1, 0.1,
-                                      0.1, 0.1, 0.6, 0.1, 0.1};
 
     // Calculate the score analytically
-    float expected_score;
-    {
-        std::vector<float> probs(activations.size());
-        softmax(activations.data(), alphabet_size, T, probs.data());
-
-        // Score calculation is specific to the given activations above
-        expected_score = probs[1] * probs[7];
-    }
 
     cudaStream_t stream;
     throw_on_error(cudaStreamCreate(&stream),
                    "cudaStreamCreate");
 
-    float *activations_gpu;
-    throw_on_error(cudaMalloc(&activations_gpu,
-                   activations.size() * sizeof(float)),
-                   "cudaMalloc");
-    throw_on_error(cudaMemcpyAsync(activations_gpu, activations.data(),
-                                   activations.size() * sizeof(float),
-                                   cudaMemcpyHostToDevice, stream),
-                   "cudaMemcpyAsync");
-
-    std::vector<int> labels = {1, 2};
-    std::vector<int> label_lengths = {2};
-    std::vector<int> lengths;
-    lengths.push_back(T);
+    const Tensor& input_tensor = ctx->input(0);
+    const Tensor& labels_indices_tensor = ctx->input(1);
+    const Tensor& labels_values_tensor = ctx->input(2);
+    const Tensor& seq_len_tensor = ctx->input(3);
+    auto input = input_tensor.tensor<float, 3>();
+    float *activations_gpu = (float*)input.data();
+    const TensorShape& inputs_shape = input_tensor.shape();
+    const int64 max_time = inputs_shape.dim_size(0);
+    const int64 batch_size = inputs_shape.dim_size(1);
+    const int64 num_classes = inputs_shape.dim_size(2);
+    const int alphabet_size = num_classes;
+    TensorShape labels_shape({batch_size, max_time});
+    std::vector<int64> order{0, 1};
+    auto labels_indices = labels_indices_tensor.tensor<int64, 2>();
+    auto labels_values = labels_values_tensor.tensor<int, 1>();
+    auto seq_len = seq_len_tensor.tensor<int, 1>();
+    int64 last_first = 0, sum = 0;
+    std::vector<int> labels;
+    std::vector<int> label_lengths;
+    for(int i = 0; i < labels_indices_tensor.dim_size(0); i++) {
+      int64 first;
+      int label_of_first;
+      cudaMemcpy(&first, &labels_indices(i,0), sizeof(int64), cudaMemcpyDeviceToHost);
+      cudaMemcpy(&label_of_first, &labels_values(i), sizeof(int), cudaMemcpyDeviceToHost);
+      labels.push_back(label_of_first);
+      if (first == last_first) {
+        sum++;
+      } else {
+        label_lengths.push_back(sum);
+        last_first = first;
+        sum = 1;
+      }
+    }
+    if (sum != 0) {
+      label_lengths.push_back(sum);
+    }
+    int size_of_lengths = seq_len_tensor.dim_size(0);
+    int lengths[size_of_lengths];
+    cudaMemcpy(lengths, seq_len.data(), size_of_lengths * sizeof(int), cudaMemcpyDeviceToHost);
 
     float score;
 
@@ -82,8 +95,8 @@ class CTCLossOp<GPUDevice> : public OpKernel {
     info.stream = stream;
 
     size_t gpu_alloc_bytes;
-    throw_on_error(get_workspace_size(label_lengths.data(), lengths.data(),
-                                      alphabet_size, lengths.size(), info,
+    throw_on_error(get_workspace_size(label_lengths.data(), (const int*)&lengths,
+                                      alphabet_size, size_of_lengths, info,
                                       &gpu_alloc_bytes),
                    "Error: get_workspace_size in small_test");
 
@@ -91,130 +104,30 @@ class CTCLossOp<GPUDevice> : public OpKernel {
     throw_on_error(cudaMalloc(&ctc_gpu_workspace, gpu_alloc_bytes),
                    "cudaMalloc");
 
-    throw_on_error(compute_ctc_loss(activations_gpu, NULL,
-                                    labels.data(), label_lengths.data(),
-                                    lengths.data(),
-                                    alphabet_size,
-                                    lengths.size(),
-                                    &score,
-                                    ctc_gpu_workspace,
-                                    info),
-                   "Error: compute_ctc_loss in small_test");
-
-    score = std::exp(-score);
-    const float eps = 1e-6;
-
-    const float lb = expected_score - eps;
-    const float ub = expected_score + eps;
-
-    throw_on_error(cudaFree(activations_gpu),
-                   "cudaFree");
-    throw_on_error(cudaFree(ctc_gpu_workspace),
-                   "cudaFree");
-    throw_on_error(cudaStreamDestroy(stream),
-                   "cudaStreamDestroy");
-    if (score > lb && score < ub) printf("true\n");
-    else printf("false\n");
-    /*const Tensor* inputs;
-    const Tensor* labels_indices;
-    const Tensor* labels_values;
-    const Tensor* seq_len;
-    OP_REQUIRES_OK(ctx, ctx->input("inputs", &inputs));
-    OP_REQUIRES_OK(ctx, ctx->input("labels_indices", &labels_indices));
-    OP_REQUIRES_OK(ctx, ctx->input("labels_values", &labels_values));
-    OP_REQUIRES_OK(ctx, ctx->input("sequence_length", &seq_len));
-
-    OP_REQUIRES(ctx, inputs->shape().dims() == 3,
-                errors::InvalidArgument("inputs is not a 3-Tensor"));
-    OP_REQUIRES(ctx, TensorShapeUtils::IsVector(seq_len->shape()),
-                errors::InvalidArgument("sequence_length is not a vector"));
-    OP_REQUIRES(ctx, TensorShapeUtils::IsMatrix(labels_indices->shape()),
-                errors::InvalidArgument("labels_indices is not a matrix"));
-    OP_REQUIRES(ctx, TensorShapeUtils::IsVector(labels_values->shape()),
-                errors::InvalidArgument("labels_values is not a vector"));
-
-    const TensorShape& inputs_shape = inputs->shape();
-    const int64 max_time = inputs_shape.dim_size(0);
-    const int64 batch_size = inputs_shape.dim_size(1);
-    const int64 num_classes = inputs_shape.dim_size(2);
-
-    OP_REQUIRES(
-        ctx, batch_size == seq_len->dim_size(0),
-        errors::InvalidArgument("len(sequence_length) != batch_size.  ",
-                                "len(sequence_length):  ", seq_len->dim_size(0),
-                                " batch_size: ", batch_size));
-    auto seq_len_t = seq_len->vec<int32>();
-
-    OP_REQUIRES(ctx, labels_indices->dim_size(0) == labels_values->dim_size(0),
-                errors::InvalidArgument(
-                    "labels_indices and labels_values must contain the "
-                    "same number of rows, but saw shapes: ",
-                    labels_indices->shape().DebugString(), " vs. ",
-                    labels_values->shape().DebugString()));
-
-    TensorShape labels_shape({batch_size, max_time});
-    std::vector<int64> order{0, 1};
-    sparse::SparseTensor labels_sp(*labels_indices, *labels_values,
-                                   labels_shape, order);
-
-    Status labels_sp_valid = labels_sp.IndicesValid();
-    OP_REQUIRES(ctx, labels_sp_valid.ok(),
-                errors::InvalidArgument("label SparseTensor is not valid: ",
-                                        labels_sp_valid.error_message()));
-
-    ctc::CTCLossCalculator::LabelSequences labels_t(batch_size);
-    for (const auto& g : labels_sp.group({0})) {  // iterate by batch
-      const int batch_indices = g.group()[0];
-      OP_REQUIRES(ctx, batch_indices >= 0 && batch_indices < batch_size,
-                  errors::InvalidArgument("labels batch index must be between ",
-                                          0, " and ", batch_size, " but saw: ",
-                                          batch_indices));
-
-      auto values = g.values<int32>();
-      std::vector<int>* b_values = &labels_t[batch_indices];
-      b_values->resize(values.size());
-      for (int i = 0; i < values.size(); ++i) (*b_values)[i] = values(i);
-    }
-
-    OP_REQUIRES(ctx, static_cast<size_t>(batch_size) == labels_t.size(),
-                errors::InvalidArgument("len(labels) != batch_size.  ",
-                                        "len(labels):  ", labels_t.size(),
-                                        " batch_size: ", batch_size));
-
-    for (int64 b = 0; b < batch_size; ++b) {
-      OP_REQUIRES(
-          ctx, seq_len_t(b) <= max_time,
-          errors::InvalidArgument("sequence_length(", b, ") <= ", max_time));
-    }
-
     Tensor* loss = nullptr;
-    OP_REQUIRES_OK(ctx, ctx->allocate_output("loss", seq_len->shape(), &loss));
+    OP_REQUIRES_OK(ctx, ctx->allocate_output("loss", seq_len_tensor.shape(), &loss));
     auto loss_t = loss->vec<float>();
 
     Tensor* gradient;
     OP_REQUIRES_OK(ctx,
                    ctx->allocate_output("gradient", inputs_shape, &gradient));
     auto gradient_t = gradient->tensor<float, 3>();
-    auto inputs_t = inputs->tensor<float, 3>();
-    std::vector<OutputMap> gradient_list_t;
-    std::vector<InputMap> input_list_t;
+    float loss_cpu[size_of_lengths];
+    throw_on_error(compute_ctc_loss(activations_gpu, gradient_t.data(),
+                                    labels.data(), label_lengths.data(),
+                                    (const int *)&lengths,
+                                    alphabet_size,
+                                    size_of_lengths,
+                                    loss_cpu,
+                                    ctc_gpu_workspace,
+                                    info),
+                   "Error: compute_ctc_loss in small_test");
+    cudaMemcpy(loss_t.data(), loss_cpu, size_of_lengths * sizeof(float), cudaMemcpyHostToDevice);
 
-    for (std::size_t t = 0; t < max_time; ++t) {
-      input_list_t.emplace_back(inputs_t.data() + t * batch_size * num_classes,
-                                batch_size, num_classes);
-      gradient_list_t.emplace_back(
-          gradient_t.data() + t * batch_size * num_classes, batch_size,
-          num_classes);
-    }
-
-    gradient_t.setZero();
-
-    // Assumption: the blank index is num_classes - 1
-    ctc::CTCLossCalculator ctc_loss_calculator(num_classes - 1, 0);
-    OP_REQUIRES_OK(ctx, ctc_loss_calculator.CalculateLoss(
-                            seq_len_t, labels_t, input_list_t,
-                            preprocess_collapse_repeated_, ctc_merge_repeated_,
-                            &loss_t, &gradient_list_t));*/
+    throw_on_error(cudaFree(ctc_gpu_workspace),
+                   "cudaFree");
+    throw_on_error(cudaStreamDestroy(stream),
+                   "cudaStreamDestroy");
   }
 
  private:
