@@ -24,10 +24,10 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
+#include "tensorflow/core/common_runtime/process_util.h"
 #include "tensorflow/core/distributed_runtime/graph_mgr.h"
 #include "tensorflow/core/distributed_runtime/master_env.h"
 #include "tensorflow/core/distributed_runtime/master_session.h"
-#include "tensorflow/core/distributed_runtime/process_util.h"
 #include "tensorflow/core/distributed_runtime/rpc/async_service_interface.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_channel.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_master_service.h"
@@ -103,10 +103,14 @@ Status GrpcServer::Init() {
         return errors::InvalidArgument("Task ", server_def_.task_index(),
                                        " was not defined in job \"",
                                        server_def_.job_name(), "\"");
-      } else if (!str_util::NumericParse32(
-                     str_util::Split(iter->second, ':')[1], &requested_port_)) {
-        return errors::Internal("Could not parse port for local server from \"",
-                                iter->second, "\"");
+      }
+      const std::vector<string> hostname_port =
+          str_util::Split(iter->second, ':');
+      if (hostname_port.size() != 2 ||
+          !strings::safe_strto32(hostname_port[1], &requested_port_)) {
+        return errors::InvalidArgument(
+            "Could not parse port for local server from \"", iter->second,
+            "\"");
       } else {
         break;
       }
@@ -164,8 +168,8 @@ Status GrpcServer::Init() {
   std::unique_ptr<GrpcChannelCache> channel_cache(NewGrpcChannelCache(
       channel_spec, GetChannelCreationFunction(server_def_)));
   const string host_port = channel_cache->TranslateTask(name_prefix);
-  if (!str_util::NumericParse32(str_util::Split(host_port, ':')[1],
-                                &requested_port_)) {
+  if (!strings::safe_strto32(str_util::Split(host_port, ':')[1],
+                             &requested_port_)) {
     return errors::Internal("Could not parse port for local server from \"",
                             channel_cache->TranslateTask(name_prefix), "\".");
   }

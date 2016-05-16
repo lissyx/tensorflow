@@ -22,6 +22,7 @@ limitations under the License.
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/kernels/bounds_check.h"
 
 namespace tensorflow {
 
@@ -35,7 +36,15 @@ class ShapeOp : public OpKernel {
     Tensor* out = nullptr;
     OP_REQUIRES_OK(ctx, ctx->allocate_output(0, TensorShape({rank}), &out));
     auto vec = out->vec<int32>();
-    for (int i = 0; i < rank; ++i) vec(i) = inp.dim_size(i);
+    // TODO(dga): support int64.  b/28119922.
+    for (int i = 0; i < rank; ++i) {
+      int64 dim_size = inp.dim_size(i);
+      OP_REQUIRES(
+          ctx, FastBoundsCheck(dim_size, std::numeric_limits<int32>::max()),
+          errors::InvalidArgument("Shape does not support tensors > int32max",
+                                  " but dim ", i, " is ", dim_size));
+      vec(i) = static_cast<int32>(dim_size);
+    }
   }
 
   bool IsExpensive() override { return false; }
@@ -75,7 +84,17 @@ class ShapeNOp : public OpKernel {
       Tensor* out = nullptr;
       OP_REQUIRES_OK(ctx, ctx->allocate_output(i, {dims}, &out));
       auto vec = out->vec<int32>();
-      for (int j = 0; j < dims; ++j) vec(j) = shape.dim_size(j);
+
+      // TODO(dga): support int64.  b/28119922.
+      for (int j = 0; j < dims; ++j) {
+        int64 dim_size = shape.dim_size(j);
+        OP_REQUIRES(
+            ctx, FastBoundsCheck(dim_size, std::numeric_limits<int32>::max()),
+            errors::InvalidArgument("Shape does not support tensors > int32max",
+                                    " but shape ", i, " dim ", j, " is ",
+                                    dim_size));
+        vec(j) = static_cast<int32>(dim_size);
+      }
     }
   }
 
@@ -159,8 +178,11 @@ class SizeOp : public OpKernel {
     const int64 size = inp.NumElements();
     Tensor* out = nullptr;
     OP_REQUIRES_OK(ctx, ctx->allocate_output(0, TensorShape({}), &out));
-    // TODO(josh11b): switch output to int64?
-    out->scalar<int32>()() = size;
+    OP_REQUIRES(ctx, FastBoundsCheck(size, std::numeric_limits<int32>::max()),
+                errors::InvalidArgument("Size does not work for tensors > "
+                                        "int32 max."));
+    // TODO(josh11b): switch output to int64?  (b/28119922)
+    out->scalar<int32>()() = static_cast<int32>(size);
   }
 
   bool IsExpensive() override { return false; }
@@ -202,7 +224,9 @@ class ExpandDimsOp : public OpKernel {
                                 " dimensions."));
 
     auto existing_dims = ctx->input(0).shape().dim_sizes();
-    std::vector<int64> new_shape(existing_dims.size());
+    // Safe - # elements in tensor dims bounded.
+    const int existing_dims_size = static_cast<int>(existing_dims.size());
+    std::vector<int64> new_shape(existing_dims_size);
     for (size_t i = 0; i < new_shape.size(); ++i) {
       new_shape[i] = existing_dims[i];
     }
@@ -214,7 +238,7 @@ class ExpandDimsOp : public OpKernel {
     }
 
     // Clamp to the end if needed.
-    dim = std::min<int32>(dim, existing_dims.size());
+    dim = std::min<int32>(dim, existing_dims_size);
     new_shape.emplace(new_shape.begin() + dim, 1);
     const TensorShape output_shape(new_shape);
 
@@ -262,6 +286,7 @@ class SqueezeOp : public OpKernel {
 
   void Compute(OpKernelContext* ctx) override {
     auto existing_dims = ctx->input(0).shape().dim_sizes();
+    const int existing_dims_size = static_cast<int>(existing_dims.size());
     std::vector<int64> new_shape;
 
     std::unordered_set<int32> wrapped_squeeze_dims;
@@ -275,13 +300,13 @@ class SqueezeOp : public OpKernel {
                                   " dimensions."));
       // If dim is < 0, we wrap around (-1 means the last element).
       if (dim < 0) {
-        dim = existing_dims.size() + dim;
+        dim = existing_dims_size + dim;
       }
 
       wrapped_squeeze_dims.insert(dim);
     }
 
-    for (size_t i = 0; i < existing_dims.size(); ++i) {
+    for (int i = 0; i < existing_dims_size; ++i) {
       auto existing_dim = existing_dims[i];
 
       // If squeeze_set is non-empty, only squeeze those dimensions.

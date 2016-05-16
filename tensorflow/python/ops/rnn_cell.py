@@ -20,7 +20,9 @@ from __future__ import print_function
 
 import math
 
-from six.moves import xrange  # pylint: disable=redefined-builtin
+# pylint: disable=redefined-builtin,unused-import
+from six.moves import xrange
+# pylint: enable=redefined-builtin,unused-import
 
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
@@ -34,41 +36,50 @@ from tensorflow.python.ops import variable_scope as vs
 from tensorflow.python.ops.math_ops import sigmoid
 from tensorflow.python.ops.math_ops import tanh
 
+from tensorflow.python.platform import tf_logging as logging
+
 
 class RNNCell(object):
   """Abstract object representing an RNN cell.
 
   An RNN cell, in the most abstract setting, is anything that has
-  a state -- a vector of floats of size self.state_size -- and performs some
-  operation that takes inputs of size self.input_size. This operation
-  results in an output of size self.output_size and a new state.
+  a state and performs some operation that takes a matrix of inputs.
+  This operation results in an output matrix with `self.output_size` columns.
+  If `self.state_size` is an integer, this operation also results in a new
+  state matrix with `self.state_size` columns.  If `self.state_size` is a
+  tuple of integers, then it results in a tuple of `len(state_size)` state
+  matrices, each with the a column size corresponding to values in `state_size`.
 
   This module provides a number of basic commonly used RNN cells, such as
   LSTM (Long Short Term Memory) or GRU (Gated Recurrent Unit), and a number
   of operators that allow add dropouts, projections, or embeddings for inputs.
-  Constructing multi-layer cells is supported by a super-class, MultiRNNCell,
-  defined later. Every RNNCell must have the properties below and and
-  implement __call__ with the following signature.
+  Constructing multi-layer cells is supported by the class `MultiRNNCell`,
+  or by calling the `rnn` ops several times. Every `RNNCell` must have the
+  properties below and and implement `__call__` with the following signature.
   """
 
   def __call__(self, inputs, state, scope=None):
     """Run this RNN cell on inputs, starting from the given state.
 
     Args:
-      inputs: 2D Tensor with shape [batch_size x self.input_size].
-      state: 2D Tensor with shape [batch_size x self.state_size].
+      inputs: `2-D` tensor with shape `[batch_size x input_size]`.
+      state: if `self.state_size` is an integer, this should be a `2-D Tensor`
+        with shape `[batch_size x self.state_size]`.  Otherwise, if
+        `self.state_size` is a tuple of integers, this should be a tuple
+        with shapes `[batch_size x s] for s in self.state_size`.
       scope: VariableScope for the created subgraph; defaults to class name.
 
     Returns:
       A pair containing:
-      - Output: A 2D Tensor with shape [batch_size x self.output_size]
-      - New state: A 2D Tensor with shape [batch_size x self.state_size].
+      - Output: A `2-D` tensor with shape `[batch_size x self.output_size]`.
+      - New state: Either a single `2-D` tensor, or a tuple of tensors matching
+        the arity and shapes of `state`.
     """
     raise NotImplementedError("Abstract method")
 
   @property
-  def input_size(self):
-    """Integer: size of inputs accepted by this cell."""
+  def state_size(self):
+    """Integer or tuple of integers: size(s) of state(s) used by this cell."""
     raise NotImplementedError("Abstract method")
 
   @property
@@ -76,24 +87,33 @@ class RNNCell(object):
     """Integer: size of outputs produced by this cell."""
     raise NotImplementedError("Abstract method")
 
-  @property
-  def state_size(self):
-    """Integer: size of state used by this cell."""
-    raise NotImplementedError("Abstract method")
-
   def zero_state(self, batch_size, dtype):
-    """Return state tensor (shape [batch_size x state_size]) filled with 0.
+    """Return zero-filled state tensor(s).
 
     Args:
       batch_size: int, float, or unit Tensor representing the batch size.
       dtype: the data type to use for the state.
 
     Returns:
-      A 2D Tensor of shape [batch_size x state_size] filled with zeros.
+      If `state_size` is an int, then the return value is a `2-D` tensor of
+      shape `[batch_size x state_size]` filled with zeros.
+
+      If `state_size` is a list or tuple of ints, then the return value is
+      a tuple of `2-D` tensors with shape
+      `[batch_size x s] for s in state_size`.
     """
-    zeros = array_ops.zeros(
-        array_ops.pack([batch_size, self.state_size]), dtype=dtype)
-    zeros.set_shape([None, self.state_size])
+    state_size = self.state_size
+    if isinstance(state_size, (list, tuple)):
+      zeros = tuple(
+          array_ops.zeros(array_ops.pack([batch_size, s]), dtype=dtype)
+          for s in state_size)
+      for s, z in zip(state_size, zeros):
+        z.set_shape([None, s])
+    else:
+      zeros = array_ops.zeros(
+          array_ops.pack([batch_size, state_size]), dtype=dtype)
+      zeros.set_shape([None, state_size])
+
     return zeros
 
 
@@ -101,25 +121,22 @@ class BasicRNNCell(RNNCell):
   """The most basic RNN cell."""
 
   def __init__(self, num_units, input_size=None):
+    if input_size is not None:
+      logging.warn("%s: The input_size parameter is deprecated." % self)
     self._num_units = num_units
-    self._input_size = num_units if input_size is None else input_size
-
-  @property
-  def input_size(self):
-    return self._input_size
-
-  @property
-  def output_size(self):
-    return self._num_units
 
   @property
   def state_size(self):
     return self._num_units
 
+  @property
+  def output_size(self):
+    return self._num_units
+
   def __call__(self, inputs, state, scope=None):
     """Most basic RNN: output = new_state = tanh(W * input + U * state + B)."""
     with vs.variable_scope(scope or type(self).__name__):  # "BasicRNNCell"
-      output = tanh(linear([inputs, state], self._num_units, True))
+      output = tanh(_linear([inputs, state], self._num_units, True))
     return output, output
 
 
@@ -127,19 +144,16 @@ class GRUCell(RNNCell):
   """Gated Recurrent Unit cell (cf. http://arxiv.org/abs/1406.1078)."""
 
   def __init__(self, num_units, input_size=None):
+    if input_size is not None:
+      logging.warn("%s: The input_size parameter is deprecated." % self)
     self._num_units = num_units
-    self._input_size = num_units if input_size is None else input_size
-
-  @property
-  def input_size(self):
-    return self._input_size
-
-  @property
-  def output_size(self):
-    return self._num_units
 
   @property
   def state_size(self):
+    return self._num_units
+
+  @property
+  def output_size(self):
     return self._num_units
 
   def __call__(self, inputs, state, scope=None):
@@ -147,11 +161,11 @@ class GRUCell(RNNCell):
     with vs.variable_scope(scope or type(self).__name__):  # "GRUCell"
       with vs.variable_scope("Gates"):  # Reset gate and update gate.
         # We start with bias of 1.0 to not reset and not update.
-        r, u = array_ops.split(1, 2, linear([inputs, state],
-                                            2 * self._num_units, True, 1.0))
+        r, u = array_ops.split(1, 2, _linear([inputs, state],
+                                             2 * self._num_units, True, 1.0))
         r, u = sigmoid(r), sigmoid(u)
       with vs.variable_scope("Candidate"):
-        c = tanh(linear([inputs, r * state], self._num_units, True))
+        c = tanh(_linear([inputs, r * state], self._num_units, True))
       new_h = u * state + (1 - u) * c
     return new_h, new_h
 
@@ -170,37 +184,46 @@ class BasicLSTMCell(RNNCell):
   For advanced models, please use the full LSTMCell that follows.
   """
 
-  def __init__(self, num_units, forget_bias=1.0, input_size=None):
+  def __init__(self, num_units, forget_bias=1.0, input_size=None,
+               state_is_tuple=False):
     """Initialize the basic LSTM cell.
 
     Args:
       num_units: int, The number of units in the LSTM cell.
       forget_bias: float, The bias added to forget gates (see above).
-      input_size: int, The dimensionality of the inputs into the LSTM cell,
-        by default equal to num_units.
+      input_size: Deprecated and unused.
+      state_is_tuple: If True, accepted and returned states are 2-tuples of
+        the `c_state` and `m_state`.  By default (False), they are concatenated
+        along the column axis.  This default behavior will soon be deprecated.
     """
+    if not state_is_tuple:
+      logging.warn(
+          "%s: Using a concatenated state is slower and will soon be "
+          "deprecated.  Use state_is_tuple=True." % self)
+    if input_size is not None:
+      logging.warn("%s: The input_size parameter is deprecated." % self)
     self._num_units = num_units
-    self._input_size = num_units if input_size is None else input_size
     self._forget_bias = forget_bias
+    self._state_is_tuple = state_is_tuple
 
   @property
-  def input_size(self):
-    return self._input_size
+  def state_size(self):
+    return ((self._num_units, self._num_units) if self._state_is_tuple
+            else 2 * self._num_units)
 
   @property
   def output_size(self):
     return self._num_units
 
-  @property
-  def state_size(self):
-    return 2 * self._num_units
-
   def __call__(self, inputs, state, scope=None):
     """Long short-term memory cell (LSTM)."""
     with vs.variable_scope(scope or type(self).__name__):  # "BasicLSTMCell"
       # Parameters of gates are concatenated into one multiply for efficiency.
-      c, h = array_ops.split(1, 2, state)
-      concat = linear([inputs, h], 4 * self._num_units, True)
+      if self._state_is_tuple:
+        c, h = state
+      else:
+        c, h = array_ops.split(1, 2, state)
+      concat = _linear([inputs, h], 4 * self._num_units, True)
 
       # i = input_gate, j = new_input, f = forget_gate, o = output_gate
       i, j, f, o = array_ops.split(1, 4, concat)
@@ -208,7 +231,11 @@ class BasicLSTMCell(RNNCell):
       new_c = c * sigmoid(f + self._forget_bias) + sigmoid(i) * tanh(j)
       new_h = tanh(new_c) * sigmoid(o)
 
-      return new_h, array_ops.concat(1, [new_c, new_h])
+      if self._state_is_tuple:
+        new_state = (new_c, new_h)
+      else:
+        new_state = array_ops.concat(1, [new_c, new_h])
+      return new_h, new_state
 
 
 def _get_concat_variable(name, shape, dtype, num_shards):
@@ -242,7 +269,7 @@ def _get_sharded_variable(name, shape, dtype, num_shards):
     current_size = unit_shard_size
     if i < remaining_rows:
       current_size += 1
-    shards.append(vs.get_variable(name + "_%d" % i, [current_size, shape[1]],
+    shards.append(vs.get_variable(name + "_%d" % i, [current_size] + shape[1:],
                                   dtype=dtype))
   return shards
 
@@ -250,7 +277,14 @@ def _get_sharded_variable(name, shape, dtype, num_shards):
 class LSTMCell(RNNCell):
   """Long short-term memory unit (LSTM) recurrent network cell.
 
-  This implementation is based on:
+  The default non-peephole implementation is based on:
+
+    http://deeplearning.cs.cmu.edu/pdfs/Hochreiter97_lstm.pdf
+
+  S. Hochreiter and J. Schmidhuber.
+  "Long Short-Term Memory". Neural Computation, 9(8):1735-1780, 1997.
+
+  The peephole implementation is based on:
 
     https://research.google.com/pubs/archive/43905.pdf
 
@@ -258,19 +292,20 @@ class LSTMCell(RNNCell):
   "Long short-term memory recurrent neural network architectures for
    large scale acoustic modeling." INTERSPEECH, 2014.
 
-  It uses peep-hole connections, optional cell clipping, and an optional
-  projection layer.
+  The class uses optional peep-hole connections, optional cell clipping, and
+  an optional projection layer.
   """
 
   def __init__(self, num_units, input_size=None,
                use_peepholes=False, cell_clip=None,
                initializer=None, num_proj=None,
-               num_unit_shards=1, num_proj_shards=1, forget_bias=1.0):
+               num_unit_shards=1, num_proj_shards=1,
+               forget_bias=1.0, state_is_tuple=False):
     """Initialize the parameters for an LSTM cell.
 
     Args:
       num_units: int, The number of units in the LSTM cell
-      input_size: int, The dimensionality of the inputs into the LSTM cell
+      input_size: Deprecated and unused.
       use_peepholes: bool, set True to enable diagonal/peephole connections.
       cell_clip: (optional) A float value, if provided the cell state is clipped
         by this value prior to the cell output activation.
@@ -283,10 +318,19 @@ class LSTMCell(RNNCell):
       num_proj_shards: How to split the projection matrix.  If >1, the
         projection matrix is stored across num_proj_shards.
       forget_bias: Biases of the forget gate are initialized by default to 1
-        in order to reduce the scale of forgetting at the beginning of the training.
+        in order to reduce the scale of forgetting at the beginning of
+        the training.
+      state_is_tuple: If True, accepted and returned states are 2-tuples of
+        the `c_state` and `m_state`.  By default (False), they are concatenated
+        along the column axis.  This default behavior will soon be deprecated.
     """
+    if not state_is_tuple:
+      logging.warn(
+          "%s: Using a concatenated state is slower and will soon be "
+          "deprecated.  Use state_is_tuple=True." % self)
+    if input_size is not None:
+      logging.warn("%s: The input_size parameter is deprecated." % self)
     self._num_units = num_units
-    self._input_size = input_size
     self._use_peepholes = use_peepholes
     self._cell_clip = cell_clip
     self._initializer = initializer
@@ -294,61 +338,66 @@ class LSTMCell(RNNCell):
     self._num_unit_shards = num_unit_shards
     self._num_proj_shards = num_proj_shards
     self._forget_bias = forget_bias
+    self._state_is_tuple = state_is_tuple
 
     if num_proj:
-      self._state_size = num_units + num_proj
+      self._state_size = (
+          (num_units, num_proj) if state_is_tuple else num_units + num_proj)
       self._output_size = num_proj
     else:
-      self._state_size = 2 * num_units
+      self._state_size = (
+          (num_units, num_units) if state_is_tuple else 2 * num_units)
       self._output_size = num_units
-
-  @property
-  def input_size(self):
-    return self._num_units if self._input_size is None else self._input_size
-
-  @property
-  def output_size(self):
-    return self._output_size
 
   @property
   def state_size(self):
     return self._state_size
+
+  @property
+  def output_size(self):
+    return self._output_size
 
   def __call__(self, inputs, state, scope=None):
     """Run one step of LSTM.
 
     Args:
       inputs: input Tensor, 2D, batch x num_units.
-      state: state Tensor, 2D, batch x state_size.
+      state: if `state_is_tuple` is False, this must be a state Tensor,
+        `2-D, batch x state_size`.  If `state_is_tuple` is True, this must be a
+        tuple of state Tensors, both `2-D`, with column sizes `c_state` and
+        `m_state`.
       scope: VariableScope for the created subgraph; defaults to "LSTMCell".
 
     Returns:
       A tuple containing:
-      - A 2D, batch x output_dim, Tensor representing the output of the LSTM
-        after reading "inputs" when previous state was "state".
+      - A `2-D, [batch x output_dim]`, Tensor representing the output of the
+        LSTM after reading `inputs` when previous state was `state`.
         Here output_dim is:
            num_proj if num_proj was set,
            num_units otherwise.
-      - A 2D, batch x state_size, Tensor representing the new state of LSTM
-        after reading "inputs" when previous state was "state".
+      - Tensor(s) representing the new state of LSTM after reading `inputs` when
+        the previous state was `state`.  Same type and shape(s) as `state`.
+
     Raises:
-      ValueError: if an input_size was specified and the provided inputs have
-        a different dimension.
+      ValueError: If input size cannot be inferred from inputs via
+        static shape inference.
     """
     num_proj = self._num_units if self._num_proj is None else self._num_proj
 
-    c_prev = array_ops.slice(state, [0, 0], [-1, self._num_units])
-    m_prev = array_ops.slice(state, [0, self._num_units], [-1, num_proj])
+    if self._state_is_tuple:
+      (c_prev, m_prev) = state
+    else:
+      c_prev = array_ops.slice(state, [0, 0], [-1, self._num_units])
+      m_prev = array_ops.slice(state, [0, self._num_units], [-1, num_proj])
 
     dtype = inputs.dtype
-    actual_input_size = inputs.get_shape().as_list()[1]
-    if self._input_size and self._input_size != actual_input_size:
-      raise ValueError("Actual input size not same as specified: %d vs %d." %
-                       actual_input_size, self._input_size)
+    input_size = inputs.get_shape().with_rank(2)[1]
+    if input_size.value is None:
+      raise ValueError("Could not infer input size from inputs.get_shape()[-1]")
     with vs.variable_scope(scope or type(self).__name__,
                            initializer=self._initializer):  # "LSTMCell"
       concat_w = _get_concat_variable(
-          "W", [actual_input_size + num_proj, 4 * self._num_units],
+          "W", [input_size.value + num_proj, 4 * self._num_units],
           dtype, self._num_unit_shards)
 
       b = vs.get_variable(
@@ -376,7 +425,9 @@ class LSTMCell(RNNCell):
         c = (sigmoid(f + self._forget_bias) * c_prev + sigmoid(i) * tanh(j))
 
       if self._cell_clip is not None:
+        # pylint: disable=invalid-unary-operand-type
         c = clip_ops.clip_by_value(c, -self._cell_clip, self._cell_clip)
+        # pylint: enable=invalid-unary-operand-type
 
       if self._use_peepholes:
         m = sigmoid(o + w_o_diag * c) * tanh(c)
@@ -390,7 +441,8 @@ class LSTMCell(RNNCell):
 
         m = math_ops.matmul(m, concat_w_proj)
 
-    return m, array_ops.concat(1, [c, m])
+    new_state = (c, m) if self._state_is_tuple else array_ops.concat(1, [c, m])
+    return m, new_state
 
 
 class OutputProjectionWrapper(RNNCell):
@@ -421,23 +473,19 @@ class OutputProjectionWrapper(RNNCell):
     self._output_size = output_size
 
   @property
-  def input_size(self):
-    return self._cell.input_size
+  def state_size(self):
+    return self._cell.state_size
 
   @property
   def output_size(self):
     return self._output_size
-
-  @property
-  def state_size(self):
-    return self._cell.state_size
 
   def __call__(self, inputs, state, scope=None):
     """Run the cell and output projection on inputs, starting from state."""
     output, res_state = self._cell(inputs, state)
     # Default scope: "OutputProjectionWrapper"
     with vs.variable_scope(scope or type(self).__name__):
-      projected = linear(output, self._output_size, True)
+      projected = _linear(output, self._output_size, True)
     return projected, res_state
 
 
@@ -449,41 +497,37 @@ class InputProjectionWrapper(RNNCell):
   do the projection on this batch-concatenated sequence, then split it.
   """
 
-  def __init__(self, cell, input_size):
+  def __init__(self, cell, num_proj, input_size=None):
     """Create a cell with input projection.
 
     Args:
       cell: an RNNCell, a projection of inputs is added before it.
-      input_size: integer, the size of the inputs before projection.
+      num_proj: Python integer.  The dimension to project to.
+      input_size: Deprecated and unused.
 
     Raises:
       TypeError: if cell is not an RNNCell.
-      ValueError: if input_size is not positive.
     """
+    if input_size is not None:
+      logging.warn("%s: The input_size parameter is deprecated." % self)
     if not isinstance(cell, RNNCell):
       raise TypeError("The parameter cell is not RNNCell.")
-    if input_size < 1:
-      raise ValueError("Parameter input_size must be > 0: %d." % input_size)
     self._cell = cell
-    self._input_size = input_size
-
-  @property
-  def input_size(self):
-    return self._input_size
-
-  @property
-  def output_size(self):
-    return self._cell.output_size
+    self._num_proj = num_proj
 
   @property
   def state_size(self):
     return self._cell.state_size
 
+  @property
+  def output_size(self):
+    return self._cell.output_size
+
   def __call__(self, inputs, state, scope=None):
     """Run the input projection and then the cell."""
     # Default scope: "InputProjectionWrapper"
     with vs.variable_scope(scope or type(self).__name__):
-      projected = linear(inputs, self._cell.input_size, True)
+      projected = _linear(inputs, self._num_proj, True)
     return self._cell(projected, state)
 
 
@@ -524,16 +568,12 @@ class DropoutWrapper(RNNCell):
     self._seed = seed
 
   @property
-  def input_size(self):
-    return self._cell.input_size
+  def state_size(self):
+    return self._cell.state_size
 
   @property
   def output_size(self):
     return self._cell.output_size
-
-  @property
-  def state_size(self):
-    return self._cell.state_size
 
   def __call__(self, inputs, state, scope=None):
     """Run the cell with the declared dropouts."""
@@ -581,14 +621,6 @@ class EmbeddingWrapper(RNNCell):
     self._initializer = initializer
 
   @property
-  def input_size(self):
-    return 1
-
-  @property
-  def output_size(self):
-    return self._cell.output_size
-
-  @property
   def state_size(self):
     return self._cell.state_size
 
@@ -615,35 +647,39 @@ class EmbeddingWrapper(RNNCell):
 class MultiRNNCell(RNNCell):
   """RNN cell composed sequentially of multiple simple cells."""
 
-  def __init__(self, cells):
+  def __init__(self, cells, state_is_tuple=False):
     """Create a RNN cell composed sequentially of a number of RNNCells.
 
     Args:
       cells: list of RNNCells that will be composed in this order.
+      state_is_tuple: If True, accepted and returned states are n-tuples, where
+        `n = len(cells)`.  By default (False), the states are all
+        concatenated along the column axis.
 
     Raises:
-      ValueError: if cells is empty (not allowed) or if their sizes don't match.
+      ValueError: if cells is empty (not allowed), or at least one of the cells
+        returns a state tuple but the flag `state_is_tuple` is `False`.
     """
     if not cells:
       raise ValueError("Must specify at least one cell for MultiRNNCell.")
-    for i in xrange(len(cells) - 1):
-      if cells[i + 1].input_size != cells[i].output_size:
-        raise ValueError("In MultiRNNCell, the input size of each next"
-                         " cell must match the output size of the previous one."
-                         " Mismatched output size in cell %d." % i)
     self._cells = cells
+    self._state_is_tuple = state_is_tuple
+    if not state_is_tuple:
+      if any(isinstance(c.state_size, (list, tuple)) for c in self._cells):
+        raise ValueError("Some cells return tuples of states, but the flag "
+                         "state_is_tuple is not set.  State sizes are: %s"
+                         % str([c.state_size for c in self._cells]))
 
   @property
-  def input_size(self):
-    return self._cells[0].input_size
+  def state_size(self):
+    if self._state_is_tuple:
+      return tuple(cell.state_size for cell in self._cells)
+    else:
+      return sum([cell.state_size for cell in self._cells])
 
   @property
   def output_size(self):
     return self._cells[-1].output_size
-
-  @property
-  def state_size(self):
-    return sum([cell.state_size for cell in self._cells])
 
   def __call__(self, inputs, state, scope=None):
     """Run this multi-layer cell on inputs, starting from state."""
@@ -653,15 +689,69 @@ class MultiRNNCell(RNNCell):
       new_states = []
       for i, cell in enumerate(self._cells):
         with vs.variable_scope("Cell%d" % i):
-          cur_state = array_ops.slice(
-              state, [0, cur_state_pos], [-1, cell.state_size])
-          cur_state_pos += cell.state_size
+          if self._state_is_tuple:
+            if not isinstance(state, (list, tuple)):
+              raise ValueError(
+                  "Expected state to be a tuple of length %d, but received: %s"
+                  % (len(self.state_size), state))
+            cur_state = state[i]
+          else:
+            cur_state = array_ops.slice(
+                state, [0, cur_state_pos], [-1, cell.state_size])
+            cur_state_pos += cell.state_size
           cur_inp, new_state = cell(cur_inp, cur_state)
           new_states.append(new_state)
-    return cur_inp, array_ops.concat(1, new_states)
+    new_states = (tuple(new_states) if self._state_is_tuple
+                  else array_ops.concat(1, new_states))
+    return cur_inp, new_states
 
 
-def linear(args, output_size, bias, bias_start=0.0, scope=None):
+class SlimRNNCell(RNNCell):
+  """A simple wrapper for slim.rnn_cells."""
+
+  def __init__(self, cell_fn):
+    """Create a SlimRNNCell from a cell_fn.
+
+    Args:
+      cell_fn: a function which takes (inputs, state, scope) and produces the
+        outputs and the new_state. Additionally when called with inputs=None and
+        state=None it should return (initial_outputs, initial_state).
+
+    Raises:
+      TypeError: if cell_fn is not callable
+      ValueError: if cell_fn cannot produce a valid initial state.
+    """
+    if not callable(cell_fn):
+      raise TypeError("cell_fn %s needs to be callable", cell_fn)
+    self._cell_fn = cell_fn
+    self._cell_name = cell_fn.func.__name__
+    init_output, init_state = self._cell_fn(None, None)
+    output_shape = init_output.get_shape()
+    state_shape = init_state.get_shape()
+    self._output_size = output_shape.with_rank(2)[1].value
+    self._state_size = state_shape.with_rank(2)[1].value
+    if self._output_size is None:
+      raise ValueError("Initial output created by %s has invalid shape %s" %
+                       (self._cell_name, output_shape))
+    if self._state_size is None:
+      raise ValueError("Initial state created by %s has invalid shape %s" %
+                       (self._cell_name, state_shape))
+
+  @property
+  def state_size(self):
+    return self._state_size
+
+  @property
+  def output_size(self):
+    return self._output_size
+
+  def __call__(self, inputs, state, scope=None):
+    scope = scope or self._cell_name
+    output, state = self._cell_fn(inputs, state, scope=scope)
+    return output, state
+
+
+def _linear(args, output_size, bias, bias_start=0.0, scope=None):
   """Linear map: sum_i(args[i] * W[i]), where W[i] is a variable.
 
   Args:

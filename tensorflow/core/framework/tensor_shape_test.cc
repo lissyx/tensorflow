@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow/core/framework/tensor_shape.h"
 
+#include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/random/simple_philox.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/lib/strings/strcat.h"
@@ -85,6 +86,21 @@ TEST(TensorShapeTest, InvalidShapeProto) {
   proto.add_dim()->set_size(1LL << 20);
   proto.add_dim()->set_size((1LL << 20) + 1);
   EXPECT_FALSE(TensorShape::IsValid(proto));
+}
+
+TEST(TensorShapeTest, TooManyDimsProto) {
+  TensorShapeProto proto;
+  // Deliberate redundancy to ensure that both paths work.
+  EXPECT_TRUE(TensorShape::IsValid(proto));
+  TF_EXPECT_OK(TensorShape::IsValidShape(proto));
+  for (int i = 0; i < TensorShape::MaxDimensions(); i++) {
+    proto.add_dim()->set_size(1);
+  }
+  EXPECT_TRUE(TensorShape::IsValid(proto));
+  TF_EXPECT_OK(TensorShape::IsValidShape(proto));
+  proto.add_dim()->set_size(1);
+  EXPECT_FALSE(TensorShape::IsValid(proto));
+  EXPECT_FALSE(TensorShape::IsValidShape(proto).ok());
 }
 
 TEST(TensorShapeTest, SetDimForEmptyTensor) {
@@ -457,6 +473,15 @@ TEST(TensorShapeTest, Randomized) {
       fprintf(stderr, "ITERATION %d: %s\n", i, sp.DebugString().c_str());
     }
     EXPECT_EQ(s.num_elements(), sold.num_elements());
+
+    // Test moves.
+    TensorShape copy = s;
+    TensorShape moved(std::move(copy));
+    EXPECT_EQ(s, moved);
+    copy = s;
+    moved = std::move(copy);
+    EXPECT_EQ(s, moved);
+
     int64 ne = sold.num_elements();
     int r = gen.Uniform(100);
     if (r < 10) {

@@ -700,7 +700,7 @@ hsv_image = tf.image.rgb_to_hsv(rgb_image)
 
 - - -
 
-### `tf.image.rgb_to_grayscale(images)` {#rgb_to_grayscale}
+### `tf.image.rgb_to_grayscale(images, name=None)` {#rgb_to_grayscale}
 
 Converts one or more images from RGB to Grayscale.
 
@@ -713,6 +713,7 @@ pixels.
 
 *  <b>`images`</b>: The RGB tensor to convert. Last dimension must have size 3 and
     should contain RGB values.
+*  <b>`name`</b>: A name for the operation (optional).
 
 ##### Returns:
 
@@ -721,7 +722,7 @@ pixels.
 
 - - -
 
-### `tf.image.grayscale_to_rgb(images)` {#grayscale_to_rgb}
+### `tf.image.grayscale_to_rgb(images, name=None)` {#grayscale_to_rgb}
 
 Converts one or more images from Grayscale to RGB.
 
@@ -732,6 +733,7 @@ last dimension of the output is 3, containing the RGB value of the pixels.
 
 
 *  <b>`images`</b>: The Grayscale tensor to convert. Last dimension must be size 1.
+*  <b>`name`</b>: A name for the operation (optional).
 
 ##### Returns:
 
@@ -1232,31 +1234,5 @@ false and no bounding boxes are supplied, an error is raised.
     `tf.slice`.
 *  <b>`bboxes`</b>: A `Tensor` of type `float32`. 3-D with shape `[1, 1, 4]` containing the distorted bounding box.
     Provide as input to `tf.image.draw_bounding_boxes`.
-
-
-
-## Other Functions and Classes
-- - -
-
-### `tf.contrib.layers.make_all(module_name, doc_string_modules=None)` {#make_all}
-
-Generate `__all__` from the docstring of one or more modules.
-
-Usage: `make_all(__name__)` or
-`make_all(__name__, [sys.modules(__name__), other_module])`. The doc string
-modules must each a docstring, and `__all__` will contain all symbols with
-`@@` references, where that symbol currently exists in the module named
-`module_name`.
-
-##### Args:
-
-
-*  <b>`module_name`</b>: The name of the module (usually `__name__`).
-*  <b>`doc_string_modules`</b>: a list of modules from which to take docstring.
-  If None, then a list containing only the module named `module_name` is used.
-
-##### Returns:
-
-  A list suitable for use as `__all__`.
 
 

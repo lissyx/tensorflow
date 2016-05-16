@@ -13,71 +13,92 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#define EIGEN_USE_THREADS
 #include "tensorflow/core/kernels/tensor_array.h"
+
+#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "tensorflow/core/framework/register_types.h"
+#include "tensorflow/core/kernels/aggregate_ops_cpu.h"
 
 namespace tensorflow {
 
-Status TensorArray::LockedWrite(OpKernelContext* ctx, const int32 index,
-                                PersistentTensor* value) {
-  TF_RETURN_IF_ERROR(LockedReturnIfClosed());
-  size_t index_size = static_cast<size_t>(index);
-  if (index < 0 ||
-      (!dynamic_size_ && index_size >= tensors_.size())) {
-    return errors::InvalidArgument(
-        "TensorArray ", handle_.vec<string>()(1), ": Tried to write to index ",
-        index, " but array is not resizeable and size is: ", tensors_.size());
-  }
-  if (dynamic_size_) {
-    // We must grow the internal TensorArray
-    if (index_size >= tensors_.capacity()) {
-      tensors_.reserve(2 * (index_size + 1));
-    }
-    if (index_size >= tensors_.size()) {
-      tensors_.resize(index_size + 1);
-    }
-  }
-  TensorAndState& t = tensors_[index];
-  if (t.written) {
-    return errors::InvalidArgument("TensorArray ", handle_.vec<string>()(1),
-                                   ": Could not write to TensorArray index ",
-                                   index,
-                                   " because it has already been written to.");
-  }
-  Tensor* value_t = value->AccessTensor(ctx);
-  if (value_t->dtype() != dtype_) {
-    return errors::InvalidArgument(
-        "TensorArray ", handle_.vec<string>()(1),
-        ": Could not write to TensorArray index ", index,
-        " because the value dtype is ", DataTypeString(value_t->dtype()),
-        " but TensorArray dtype is ", DataTypeString(dtype_), ".");
-  }
-  t.tensor = *value;
-  t.shape = value_t->shape();
-  t.written = true;
-  return Status::OK();
-}
+typedef Eigen::ThreadPoolDevice CPUDevice;
+typedef Eigen::GpuDevice GPUDevice;
 
-Status TensorArray::LockedRead(const int32 index, PersistentTensor* value) {
+namespace tensor_array {
+
+#define TENSOR_ARRAY_WRITE_OR_ADD(Device, T)                                \
+  template <>                                                               \
+  Status AddToTensor<Device, T>(OpKernelContext * ctx, Tensor * sum,        \
+                                const Tensor* current, const Tensor* add) { \
+    functor::Add2Functor<Device, T> add_functor;                            \
+    add_functor(ctx->template eigen_device<Device>(), sum->flat<T>(),       \
+                current->flat<T>(), add->flat<T>());                        \
+    return Status::OK();                                                    \
+  }
+
+#define TENSOR_ARRAY_WRITE_OR_ADD_CPU(T) TENSOR_ARRAY_WRITE_OR_ADD(CPUDevice, T)
+TF_CALL_NUMBER_TYPES(TENSOR_ARRAY_WRITE_OR_ADD_CPU)
+#undef TENSOR_ARRAY_WRITE_OR_ADD_CPU
+
+#if GOOGLE_CUDA
+
+#define TENSOR_ARRAY_WRITE_OR_ADD_GPU(T) TENSOR_ARRAY_WRITE_OR_ADD(GPUDevice, T)
+TF_CALL_GPU_NUMBER_TYPES(TENSOR_ARRAY_WRITE_OR_ADD_GPU);
+#undef TENSOR_ARRAY_WRITE_OR_ADD_GPU
+
+#endif  // GOOGLE_CUDA
+
+#undef TENSOR_ARRAY_WRITE_OR_ADD
+
+#define TENSOR_ARRAY_SET_ZERO(Device, T)                                      \
+  template <>                                                                 \
+  Status TensorSetZero<Device, T>(OpKernelContext * ctx, Tensor * value) {    \
+    functor::SetZeroFunctor<Device, T> set_zero_functor;                      \
+    set_zero_functor(ctx->template eigen_device<Device>(), value->flat<T>()); \
+    return Status::OK();                                                      \
+  }
+
+#define TENSOR_ARRAY_SET_ZERO_CPU(T) TENSOR_ARRAY_SET_ZERO(CPUDevice, T)
+TF_CALL_NUMBER_TYPES(TENSOR_ARRAY_SET_ZERO_CPU)
+#undef TENSOR_ARRAY_SET_ZERO_CPU
+
+#if GOOGLE_CUDA
+
+#define TENSOR_ARRAY_SET_ZERO_GPU(T) TENSOR_ARRAY_SET_ZERO(GPUDevice, T)
+TF_CALL_GPU_NUMBER_TYPES(TENSOR_ARRAY_SET_ZERO_GPU);
+#undef TENSOR_ARRAY_SET_ZERO_GPU
+
+#endif  // GOOGLE_CUDA
+
+#undef TENSOR_ARRAY_SET_ZERO
+
+}  // namespace tensor_array
+
+Status TensorArray::CopyShapesFrom(TensorArray* rhs) {
+  mutex_lock l(mu_);
+  mutex_lock l_rhs(*rhs->mu());
   TF_RETURN_IF_ERROR(LockedReturnIfClosed());
-  if (index < 0 || static_cast<size_t>(index) >= tensors_.size()) {
-    return errors::InvalidArgument("Tried to read from index ", index,
-                                   " but array size is: ", tensors_.size());
-  }
-  TensorAndState& t = tensors_[index];
-  if (t.read) {
+  TF_RETURN_IF_ERROR(rhs->LockedReturnIfClosed());
+  if (tensors_.size() != rhs->tensors_.size()) {
     return errors::InvalidArgument(
-        "TensorArray ", handle_.vec<string>()(1), ": Could not read index ",
-        index, " twice because TensorArray a read-once object.");
+        "TensorArray sizes do not match during CopyShapesFrom: ",
+        handle_.vec<string>()(1), " has size ", tensors_.size(), " but rhs ",
+        rhs->handle_.vec<string>()(1), " has size ", rhs->tensors_.size());
   }
-  if (!t.written) {
-    return errors::InvalidArgument("TensorArray ", handle_.vec<string>()(1),
-                                   ": Could not read from TensorArray index ",
-                                   index,
-                                   " because it has not yet been written to.");
+  for (std::size_t i = 0; i < tensors_.size(); ++i) {
+    // Skip "soft copy" of indices which have not been written.
+    if (!rhs->tensors_[i].written) continue;
+
+    // Copy the shape over.
+    tensors_[i].shape = rhs->tensors_[i].shape;
+    // Mark as written.  Reads will know that if written is true and
+    // read is false, and cleared is false, to return zeros of the
+    // appropriate shape.  Future aggregating writes will only use the shape
+    // for validation.
+    tensors_[i].written = true;
   }
-  *value = t.tensor;
-  t.read = true;
-  t.tensor = PersistentTensor();
+
   return Status::OK();
 }
 

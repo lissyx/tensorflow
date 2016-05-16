@@ -23,12 +23,14 @@ limitations under the License.
 #include <unordered_set>
 #include <vector>
 
+#include "tensorflow/core/common_runtime/costmodel_manager.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/common_runtime/device_set.h"
 #include "tensorflow/core/common_runtime/executor.h"
 #include "tensorflow/core/common_runtime/rendezvous_mgr.h"
 #include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/framework/graph.pb.h"
+#include "tensorflow/core/framework/session_state.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status.h"
@@ -78,12 +80,12 @@ class DirectSession : public Session {
   ::tensorflow::Status PRun(const string& handle, const NamedTensorList& inputs,
                             const std::vector<string>& output_names,
                             std::vector<Tensor>* outputs) override;
+
   ::tensorflow::Status Close() override;
 
-  // NOTE: This is a temporary api that is only meant to enable testing.
-  // This api will be replaced with better ones soon, so DO NOT USE
-  const std::unordered_map<const Graph*, CostModel*>& GetCostModels() const {
-    return cost_models_;
+  // This is mainly for testing/debugging.
+  gtl::iterator_range<CostModelManager::CostModelMapIter> CostModels() {
+    return cost_model_manager_.CostModels();
   }
 
  private:
@@ -135,6 +137,7 @@ class DirectSession : public Session {
     Notification executors_done;
     std::unordered_set<string> pending_inputs;
     std::unordered_set<string> pending_outputs;
+    TensorStore tensor_store;
 
     RunState(const std::vector<string>& input_names,
              const std::vector<string>& output_names) {
@@ -146,6 +149,7 @@ class DirectSession : public Session {
         pending_outputs.emplace(name);
       }
     }
+
     ~RunState();
   };
 
@@ -228,6 +232,9 @@ class DirectSession : public Session {
   std::unordered_map<string, RunState*> partial_runs_
       GUARDED_BY(executor_lock_);
 
+  // This holds all the tensors that are currently alive in the session.
+  SessionState session_state_;
+
   CancellationManager* cancellation_manager_;
 
   // Saves and restores device placements for stateful nodes.
@@ -249,8 +256,8 @@ class DirectSession : public Session {
   // Global timeout for all blocking operations in this session.
   const int64 operation_timeout_in_ms_ = 0;
 
-  std::unordered_map<const Graph*, CostModel*> cost_models_
-      GUARDED_BY(executor_lock_);
+  // Manages all the cost models for the graphs executed in this session.
+  CostModelManager cost_model_manager_;
 
   TF_DISALLOW_COPY_AND_ASSIGN(DirectSession);
 };

@@ -206,7 +206,9 @@ DataTypeVector NumberTypes() {
 
 #elif defined(__ANDROID_TYPES_FULL__)
 
-DataTypeVector RealNumberTypes() { return {DT_FLOAT, DT_INT32, DT_INT64}; }
+DataTypeVector RealNumberTypes() {
+  return {DT_FLOAT, DT_INT32, DT_INT64, DT_HALF};
+}
 
 DataTypeVector NumberTypes() {
   return {DT_FLOAT,  DT_INT32,  DT_INT64, DT_QINT8,
@@ -276,6 +278,20 @@ bool DataTypeIsQuantized(DataType dt) {
     case DT_QINT16:
     case DT_QUINT16:
     case DT_QINT32:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool DataTypeIsInteger(DataType dt) {
+  switch (dt) {
+    case DT_INT8:
+    case DT_UINT8:
+    case DT_INT16:
+    case DT_UINT16:
+    case DT_INT32:
+    case DT_INT64:
       return true;
     default:
       return false;

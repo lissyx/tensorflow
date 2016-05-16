@@ -21,8 +21,8 @@ limitations under the License.
 #include "grpc++/grpc++.h"
 #include "grpc++/security/credentials.h"
 
+#include "tensorflow/core/common_runtime/process_util.h"
 #include "tensorflow/core/distributed_runtime/master_env.h"
-#include "tensorflow/core/distributed_runtime/process_util.h"
 #include "tensorflow/core/distributed_runtime/rpc/async_service_interface.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_channel.h"
 #include "tensorflow/core/distributed_runtime/server_lib.h"
@@ -89,12 +89,12 @@ class GrpcServer : public ServerInterface {
 
   // Implementation of a TensorFlow master, and RPC polling thread.
   MasterEnv master_env_;
-  AsyncServiceInterface* master_service_;
+  AsyncServiceInterface* master_service_ = nullptr;
   std::unique_ptr<Thread> master_thread_ GUARDED_BY(mu_);
 
   // Implementation of a TensorFlow worker, and RPC polling thread.
   WorkerEnv worker_env_;
-  AsyncServiceInterface* worker_service_;
+  AsyncServiceInterface* worker_service_ = nullptr;
   std::unique_ptr<Thread> worker_thread_ GUARDED_BY(mu_);
 
   std::unique_ptr<::grpc::Server> server_ GUARDED_BY(mu_);

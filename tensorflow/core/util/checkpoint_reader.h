@@ -20,6 +20,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/tensor_slice_reader.h"
+#include "tensorflow/core/util/tf_status_helper.h"
 
 namespace tensorflow {
 
@@ -28,29 +29,33 @@ namespace checkpoint {
 class TensorSliceReader;
 
 // A wrapper around checkpoint::TensorSliceReader that is more easily SWIG
-// wrapped for Python.
+// wrapped for other languages.
 class CheckpointReader {
  public:
   ~CheckpointReader();
 
-  static Status NewCheckpointReaderImpl(
-      const string& filepattern, std::unique_ptr<CheckpointReader>* out_reader);
   bool HasTensor(const string& name) const;
   const string DebugString() const;
 
   const TensorSliceReader::VarToShapeMap& GetVariableToShapeMap() const;
 
- private:
-  CheckpointReader(const string& filepattern, tensorflow::Status*);
+  void GetTensor(const string& name,
+                 std::unique_ptr<tensorflow::Tensor>* out_tensor,
+                 TF_Status* out_status) const {
+    Status status = reader_->GetTensor(name, out_tensor);
+    if (!status.ok()) {
+      Set_TF_Status_from_Status(out_status, status);
+    }
+  }
 
+  CheckpointReader(const string& filepattern, TF_Status* out_status);
+
+ private:
   TensorSliceReader* reader_;                               // Owned
   TensorSliceReader::VarToShapeMap* var_to_shape_map_ptr_;  // Owned
 
   TF_DISALLOW_COPY_AND_ASSIGN(CheckpointReader);
 };
-
-Status NewCheckpointReader(const string& filepattern,
-                           std::unique_ptr<CheckpointReader>* out_reader);
 
 }  // namespace checkpoint
 }  // namespace tensorflow

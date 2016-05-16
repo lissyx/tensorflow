@@ -51,12 +51,8 @@ message OptimizerOptions {
     // L1 is the default level.
     // Optimization performed at L1 :
     // 1. Common subexpression elimination
-    L1 = 0;
-
-    // Optimization performed at L2 :
-    // 1. Common subexpression elimination
     // 2. Constant folding
-    L2 = 2;
+    L1 = 0;
 
     // No optimizations
     L0 = -1;
@@ -80,6 +76,10 @@ message GraphOptions {
   // Build a cost model detailing the memory usage and performance of
   // each node of the graph.
   bool build_cost_model = 4;
+
+  // Annotate each Node with Op output shape data, to the extent it can
+  // be statically inferred.
+  bool infer_shapes = 5;
 };
 
 // Session configuration parameters.

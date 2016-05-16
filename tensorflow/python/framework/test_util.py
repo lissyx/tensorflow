@@ -39,7 +39,7 @@ from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import versions
 from tensorflow.python.platform import googletest
-from tensorflow.python.platform import logging
+from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.util import compat
 from tensorflow.python.util.protobuf import compare
 
@@ -237,6 +237,9 @@ class TensorFlowTestCase(googletest.TestCase):
       elif force_gpu and config.allow_soft_placement:
         config = config_pb2.ConfigProto().CopyFrom(config)
         config.allow_soft_placement = False
+      # Don't perform optimizations for tests so we don't inadvertently run
+      # gpu ops on cpu
+      config.graph_options.optimizer_options.opt_level = -1
       return config
 
     if graph is None:
@@ -375,8 +378,9 @@ class TensorFlowTestCase(googletest.TestCase):
       farray2: a list of float values.
       err: a float value.
     """
+    self.assertEqual(len(farray1), len(farray2))
     for f1, f2 in zip(farray1, farray2):
-      self.assertNear(f1, f2, err)
+      self.assertNear(float(f1), float(f2), err)
 
   def _NDArrayNear(self, ndarray1, ndarray2, err):
     return np.linalg.norm(ndarray1 - ndarray2) < err
@@ -432,6 +436,26 @@ class TensorFlowTestCase(googletest.TestCase):
       print("not close dif = ", np.abs(x - y))
       print("not close tol = ", atol + rtol * np.abs(y))
       np.testing.assert_allclose(a, b, rtol=rtol, atol=atol)
+
+  def assertAllCloseAccordingToType(self, a, b, rtol=1e-6, atol=1e-6):
+    """Like assertAllClose, but also suitable for comparing fp16 arrays.
+
+    In particular, the tolerance is reduced to 1e-3 if at least
+    one of the arguments is of type float16.
+
+    Args:
+      a: a numpy ndarray or anything can be converted to one.
+      b: a numpy ndarray or anything can be converted to one.
+      rtol: relative tolerance
+      atol: absolute tolerance
+    """
+    a = self._GetNdArray(a)
+    b = self._GetNdArray(b)
+    if a.dtype == np.float16 or b.dtype == np.float16:
+      rtol = max(rtol, 1e-3)
+      atol = max(atol, 1e-3)
+
+    self.assertAllClose(a, b, rtol=rtol, atol=atol)
 
   def assertAllEqual(self, a, b):
     """Asserts that two numpy arrays have the same values.
@@ -524,8 +548,8 @@ class TensorFlowTestCase(googletest.TestCase):
     """Asserts that the two given devices are the same.
 
     Args:
-      device1: A string device name or TensorFlow `Device` object.
-      device2: A string device name or TensorFlow `Device` object.
+      device1: A string device name or TensorFlow `DeviceSpec` object.
+      device2: A string device name or TensorFlow `DeviceSpec` object.
     """
     device1 = pydev.canonical_name(device1)
     device2 = pydev.canonical_name(device2)

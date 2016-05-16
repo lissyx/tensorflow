@@ -564,6 +564,77 @@ TEST(DirectSessionTest, PartialRunMultiOutputFeed) {
   ASSERT_EQ(true, outputs[0].flat<bool>()(0));
 }
 
+TEST(DirectSessionTest, RunHandleTest) {
+  GraphDef def;
+  Graph g(OpRegistry::Global());
+
+  Tensor value0(DT_FLOAT, TensorShape({}));
+  value0.scalar<float>()() = 1.0;
+  Node* const0 = test::graph::Constant(&g, value0);
+  Node* identity0 = test::graph::Identity(&g, const0);
+
+  Tensor value1(DT_FLOAT, TensorShape({}));
+  value1.scalar<float>()() = 2.0;
+  Node* const1 = test::graph::Constant(&g, value1);
+  Node* node3 = test::graph::Add(&g, identity0, const1);
+  Node* node4 = test::graph::Unary(&g, "GetSessionHandle", node3);
+
+  Tensor value2(DT_STRING, TensorShape({}));
+  Node* const2 = test::graph::Constant(&g, value2);
+  Node* node5 = test::graph::GetSessionTensor(&g, const2);
+  Node* node6 = test::graph::Add(&g, node5, const1);
+
+  Node* node7 = test::graph::Unary(&g, "DeleteSessionTensor", const2);
+
+  test::graph::ToGraphDef(&g, &def);
+
+  std::unique_ptr<Session> session(CreateSession());
+  ASSERT_TRUE(session != nullptr);
+  TF_ASSERT_OK(session->Create(def));
+
+  // First run call: Create a handle.
+  std::vector<Tensor> outputs;
+  Status s = session->Run({}, {node4->name() + ":0"}, {}, &outputs);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(1, outputs.size());
+
+  // Second run call: Use a handle.
+  std::vector<Tensor> outputs1;
+  s = session->Run({{const2->name(), outputs[0]}}, {node6->name() + ":0"}, {},
+                   &outputs1);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(1, outputs1.size());
+  ASSERT_EQ(5.0, outputs1[0].flat<float>()(0));
+
+  // Third run call: Delete a handle.
+  std::vector<Tensor> outputs2;
+  s = session->Run({{const2->name(), outputs[0]}}, {}, {node7->name()},
+                   &outputs2);
+  ASSERT_TRUE(s.ok());
+}
+
+TEST(DirectSessionTest, CreateGraphFailsWhenAssigningAFedVar) {
+  Graph graph(OpRegistry::Global());
+
+  Node* a = test::graph::Var(&graph, DT_FLOAT, {});
+  Node* b = test::graph::Constant(&graph, {});
+
+  Tensor zero(DT_FLOAT, {});
+  test::FillValues<float>(&zero, {0});
+
+  // a = b
+  Node* assign = test::graph::Assign(&graph, a, b);
+
+  std::unique_ptr<Session> session(CreateSession());
+  ASSERT_TRUE(session != nullptr);
+
+  // The graph is invalid since a constant cannot be assigned to a constant.
+  // The return Status of session->Run should flag this as an invalid argument.
+  std::vector<Tensor> outputs;
+  Status s = session->Run({{a->name(), zero}}, {assign->name()}, {}, &outputs);
+  ASSERT_TRUE(errors::IsInvalidArgument(s));
+}
+
 TEST(DirectSessionTest, TimeoutSession) {
   GraphDef graph;
   // Creates a graph with one FIFOQueue and one dequeue op.
@@ -656,64 +727,6 @@ TEST(DirectSessionTest, TimeoutSession) {
                            nullptr);
   ASSERT_EQ(error::DEADLINE_EXCEEDED, s2.code());
   session->Close();
-}
-
-TEST(DirectSessionTest, CostModelTest) {
-  Graph graph(OpRegistry::Global());
-
-  Tensor a_tensor(DT_FLOAT, TensorShape({2, 2}));
-  test::FillValues<float>(&a_tensor, {3, 2, -1, 0});
-  Node* a = test::graph::Constant(&graph, a_tensor);
-  a->set_assigned_device_name("/job:localhost/replica:0/task:0/cpu:0");
-
-  Tensor x_tensor(DT_FLOAT, TensorShape({2, 1}));
-  test::FillValues<float>(&x_tensor, {1, 1});
-  Node* x = test::graph::Constant(&graph, x_tensor);
-  x->set_assigned_device_name("/job:localhost/replica:0/task:0/cpu:1");
-
-  // y = A * x
-  Node* y = test::graph::Matmul(&graph, a, x, false, false);
-  y->set_assigned_device_name("/job:localhost/replica:0/task:0/cpu:0");
-
-  Node* y_neg = test::graph::Unary(&graph, "Neg", y);
-  y_neg->set_assigned_device_name("/job:localhost/replica:0/task:0/cpu:1");
-
-  GraphDef def;
-  test::graph::ToGraphDef(&graph, &def);
-
-  SessionOptions options;
-  (*options.config.mutable_device_count())["CPU"] = 2;
-  options.config.mutable_graph_options()->set_build_cost_model(true);
-  std::unique_ptr<Session> session(NewSession(options));
-  TF_ASSERT_OK(session->Create(def));
-  std::vector<std::pair<string, Tensor>> inputs;
-
-  // Request two targets: one fetch output and one non-fetched output.
-  std::vector<string> output_names = {y->name() + ":0"};
-  std::vector<string> target_nodes = {y_neg->name()};
-  std::vector<Tensor> outputs;
-  Status s = session->Run(inputs, output_names, target_nodes, &outputs);
-  TF_ASSERT_OK(s);
-
-  DirectSession* ds = static_cast<DirectSession*>(session.get());
-  const std::unordered_map<const Graph*, CostModel*>& cost_models =
-      ds->GetCostModels();
-  // We should have 2 cost models since we have 2 cpu devices.
-  ASSERT_EQ(2, cost_models.size());
-
-  for (auto it : cost_models) {
-    const Graph* g = (it).first;
-    const CostModel* cm = (it).second;
-    for (Node* node : g->nodes()) {
-      if (node->name() == y->name()) {
-        EXPECT_EQ(0, cm->MaxSize(node, 0));
-        EXPECT_EQ(0, cm->Aliases(node, 0));
-      } else if (node->name() == y_neg->name()) {
-        EXPECT_EQ(0, cm->MaxSize(node, 0));
-        EXPECT_EQ(0, cm->Aliases(node, 0));
-      }
-    }
-  }
 }
 
 }  // namespace

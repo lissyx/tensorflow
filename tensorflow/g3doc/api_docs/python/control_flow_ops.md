@@ -147,6 +147,20 @@ Return either fn1() or fn2() based on the boolean predicate `pred`.
 `fn1` and `fn2` both return lists of output tensors. `fn1` and `fn2` must have
 the same non-zero number and type of outputs.
 
+Note that the conditional execution applies only to the operations defined in
+fn1 and fn2. Consider the following simple program:
+
+```python
+z = tf.mul(a, b)
+result = tf.cond(x < y, lambda: tf.add(x, z), lambda: tf.square(y))
+```
+
+If x < y, the tf.add operation will be executed and tf.square
+operation will not be executed. Since z is needed for at least one
+branch of the cond, the tf.mul operation is always executed, unconditionally.
+Although this behavior is consistent with the dataflow model of TensorFlow,
+it has occasionally surprised some users who expected a lazier semantics.
+
 ##### Args:
 
 
@@ -175,7 +189,7 @@ the same non-zero number and type of outputs.
   y = tf.constant(5)
   def f1(): return tf.mul(x, 17)
   def f2(): return tf.add(y, 23)
-  r = cond(math_ops.less(x, y), f1, f2)
+  r = cond(tf.less(x, y), f1, f2)
   # r is set to f1().
   # Operations in f2 (e.g., tf.add) are not executed.
 ```
@@ -259,199 +273,66 @@ Example 2:
              callable.
 
 
-
-## Higher Order Operators
-
-TensorFlow provides several higher order operators to simplify the common
-map-reduce programming patterns.
-
 - - -
 
-### `tf.map_fn(fn, elems, dtype=None, parallel_iterations=10, back_prop=True, swap_memory=False, name=None)` {#map_fn}
+### `tf.while_loop(cond, body, loop_vars, parallel_iterations=10, back_prop=True, swap_memory=False, name=None)` {#while_loop}
 
-The map operator on the list of tensors resulted from unpacking `elems`
-along the first dimension.
+Repeat `body` while the condition `cond` is true.
 
-This map operator repeatedly applies the callable `fn` to a sequence of
-elements from first to last. The elements are made of the tensors unpacked
-from `elems`. `dtype` is the data type of the return value of `fn`. Users
-must provide `dtype` if it is different from the data type of `elems`.
+`cond` is a callable returning a boolean scalar tensor. `body` is a callable
+returning a list of tensors of the same length and with the same types as
+`loop_vars`. `loop_vars` is a list of tensors that is passed to both `cond`
+and `body`. `cond` and `body` both take as many arguments as there are
+`loop_vars`.
 
-Suppose that `elems` is unpacked into `values`, a list of tensors. The shape
-of the result tensor is `[len(values)] + fn(values[0]).shape`.
+In addition to regular Tensors or IndexedSlices, the body may accept and
+return TensorArray objects.  The flows of the TensorArray objects will
+be appropriately forwarded between loops and during gradient calculations.
+
+While `cond` evaluates to true, `body` is executed.
+
+`while_loop` implements non-strict semantics, enabling multiple iterations
+to run in parallel. The maximum number of parallel iterations can be
+controlled by `parallel_iterations`, which gives users some control over
+memory consumption and execution order. For correct programs, `while_loop`
+should return the same result for any parallel_iterations > 0.
+
+For training, TensorFlow remembers the tensors that are produced in the
+forward inference but needed in back propagation. These tensors can be a
+main source of memory consumption and often cause OOM problems when training
+on GPUs.  When the flag swap_memory is true, we swap out these tensors from
+GPU to CPU.  This for example allows us to train RNN models with very long
+sequences and large batches.
 
 ##### Args:
 
 
-*  <b>`fn`</b>: The callable to be performed.
-*  <b>`elems`</b>: A tensor to be unpacked to apply `fn`.
-*  <b>`dtype`</b>: (optional) The output type of `fn`.
-*  <b>`parallel_iterations`</b>: (optional) The number of iterations allowed to run
-                       in parallel.
-*  <b>`back_prop`</b>: (optional) True enables back propagation.
-*  <b>`swap_memory`</b>: (optional) True enables GPU-CPU memory swapping.
-*  <b>`name`</b>: (optional) Name prefix for the returned tensors.
+*  <b>`cond`</b>: A callable that represents the termination condition of the loop.
+*  <b>`body`</b>: A callable that represents the loop body.
+*  <b>`loop_vars`</b>: The list of variable input tensors.
+*  <b>`parallel_iterations`</b>: The number of iterations allowed to run in parallel.
+*  <b>`back_prop`</b>: Whether backprop is enabled for this while loop.
+*  <b>`swap_memory`</b>: Whether GPU-CPU memory swap is enabled for this loop.
+*  <b>`name`</b>: Optional name prefix for the returned tensors.
 
 ##### Returns:
 
-  A tensor that packs the results of applying `fn` to the list of tensors
-  unpacked from `elems`, from first to last.
+  The output tensors for the loop variables after the loop.
 
 ##### Raises:
 
 
-*  <b>`TypeError`</b>: if `fn` is not callable.
-
-##### Example:
-
-  ```python
-  elems = [1, 2, 3, 4, 5, 6]
-  squares = map_fn(lambda x: x * x, elems)
-  # squares == [1, 4, 9, 16, 25, 36]
-  ```
+*  <b>`TypeError`</b>: if `cond` or `body` is not callable.
+*  <b>`ValueError`</b>: if `loop_var` is empty.
 
 
-- - -
-
-### `tf.foldl(fn, elems, initializer=None, parallel_iterations=10, back_prop=True, swap_memory=False, name=None)` {#foldl}
-
-The foldl operator on the list of tensors resulted from unpacking `elems`
-along the first dimension.
-
-This foldl operator repeatedly applies the callable `fn` to a sequence
-of elements from first to last. The elements are made of the tensors
-unpacked from `elems` on dimension 0. The callable fn takes two tensors as
-arguments. The first argument is the accumulated value computed from the
-preceding invocation of fn. If `initializer` is None, `elems` must contain
-at least one element, and its first element is used as the initializer.
-
-Suppose that `elems` is unpacked into `values`, a list of tensors. The shape
-of the result tensor is fn(initializer, values[0]).shape`.
-
-##### Args:
-
-
-*  <b>`fn`</b>: The callable to be performed.
-*  <b>`elems`</b>: A tensor to be unpacked on dimension 0.
-*  <b>`initializer`</b>: (optional) The initial value for the accumulator.
-*  <b>`parallel_iterations`</b>: (optional) The number of iterations allowed to run
-                       in parallel.
-*  <b>`back_prop`</b>: (optional) True enables back propagation.
-*  <b>`swap_memory`</b>: (optional) True enables GPU-CPU memory swapping.
-*  <b>`name`</b>: (optional) Name prefix for the returned tensors.
-
-##### Returns:
-
-  A tensor resulting from applying `fn` consecutively to the list of tensors
-  unpacked from `elems`, from first to last.
-
-##### Raises:
-
-
-*  <b>`TypeError`</b>: if `fn` is not callable.
-
-##### Example:
+*  <b>`Example`</b>: 
 
   ```python
-  elems = [1, 2, 3, 4, 5, 6]
-  sum = foldl(lambda a, x: a + x, elems)
-  # sum == 21
-  ```
-
-
-- - -
-
-### `tf.foldr(fn, elems, initializer=None, parallel_iterations=10, back_prop=True, swap_memory=False, name=None)` {#foldr}
-
-The foldr operator on the list of tensors resulted from unpacking `elems`
-along the first dimension.
-
-This foldr operator repeatedly applies the callable `fn` to a sequence
-of elements from last to first. The elements are made of the tensors
-unpacked from `elems`. The callable fn takes two tensors as arguments.
-The first argument is the accumulated value computed from the preceding
-invocation of fn. If `initializer` is None, `elems` must contain at least
-one element, and its first element is used as the initializer.
-
-Suppose that `elems` is unpacked into `values`, a list of tensors. The shape
-of the result tensor is `fn(initializer, values[0]).shape`.
-
-##### Args:
-
-
-*  <b>`fn`</b>: The callable to be performed.
-*  <b>`elems`</b>: A tensor that is unpacked into a sequence of tensors to apply `fn`.
-*  <b>`initializer`</b>: (optional) The initial value for the accumulator.
-*  <b>`parallel_iterations`</b>: (optional) The number of iterations allowed to run
-                       in parallel.
-*  <b>`back_prop`</b>: (optional) True enables back propagation.
-*  <b>`swap_memory`</b>: (optional) True enables GPU-CPU memory swapping.
-*  <b>`name`</b>: (optional) Name prefix for the returned tensors.
-
-##### Returns:
-
-  A tensor resulting from applying `fn` consecutively to the list of tensors
-  unpacked from `elems`, from last to first.
-
-##### Raises:
-
-
-*  <b>`TypeError`</b>: if `fn` is not callable.
-
-##### Example:
-
-  ```python
-  elems = [1, 2, 3, 4, 5, 6]
-  sum = foldr(lambda a, x: a + x, elems)
-  # sum == 21
-  ```
-
-
-- - -
-
-### `tf.scan(fn, elems, initializer=None, parallel_iterations=10, back_prop=True, swap_memory=False, name=None)` {#scan}
-
-The scan operator on the list of tensors resulted from unpacking `elems`
-along the first dimension.
-
-This scan operator repeatedly applies the callable `fn` to a sequence
-of elements from first to last. The elements are made of the tensors
-unpacked from `elems` on dimension 0. The callable fn takes two tensors as
-arguments. The first argument is the accumulated value computed from the
-preceding invocation of fn. If `initializer` is None, `elems` must contain
-at least one element, and its first element is used as the initializer.
-
-Suppose that `elems` is unpacked into `values`, a list of tensors. The shape
-of the result tensor is `[len(values)] + fn(initializer, values[0]).shape`.
-
-##### Args:
-
-
-*  <b>`fn`</b>: The callable to be performed.
-*  <b>`elems`</b>: A tensor to be unpacked on dimension 0.
-*  <b>`initializer`</b>: (optional) The initial value for the accumulator.
-*  <b>`parallel_iterations`</b>: (optional) The number of iterations allowed to run
-                       in parallel.
-*  <b>`back_prop`</b>: (optional) True enables back propagation.
-*  <b>`swap_memory`</b>: (optional) True enables GPU-CPU memory swapping.
-*  <b>`name`</b>: (optional) Name prefix for the returned tensors.
-
-##### Returns:
-
-  A tensor that packs the results of applying `fn` to the list of tensors
-  unpacked from `elems`, from first to last.
-
-##### Raises:
-
-
-*  <b>`TypeError`</b>: if `fn` is not callable.
-
-##### Example:
-
-  ```python
-  elems = [1, 2, 3, 4, 5, 6]
-  sum = scan(lambda a, x: a + x, elems)
-  # sum == [1, 3, 6, 10, 15, 21]
+  i = tf.constant(0)
+  c = lambda i: tf.less(i, 10)
+  b = lambda i: tf.add(i, 1)
+  r = tf.while_loop(c, b, [i])
   ```
 
 
@@ -536,7 +417,7 @@ Returns the truth value of (x == y) element-wise.
 ##### Args:
 
 
-*  <b>`x`</b>: A `Tensor`. Must be one of the following types: `float32`, `float64`, `uint8`, `int8`, `int16`, `int32`, `int64`, `complex64`, `quint8`, `qint8`, `qint32`, `string`.
+*  <b>`x`</b>: A `Tensor`. Must be one of the following types: `half`, `float32`, `float64`, `uint8`, `int8`, `int16`, `int32`, `int64`, `complex64`, `quint8`, `qint8`, `qint32`, `string`, `bool`.
 *  <b>`y`</b>: A `Tensor`. Must have the same type as `x`.
 *  <b>`name`</b>: A name for the operation (optional).
 
@@ -554,7 +435,7 @@ Returns the truth value of (x != y) element-wise.
 ##### Args:
 
 
-*  <b>`x`</b>: A `Tensor`. Must be one of the following types: `float32`, `float64`, `uint8`, `int8`, `int16`, `int32`, `int64`, `complex64`, `quint8`, `qint8`, `qint32`, `string`.
+*  <b>`x`</b>: A `Tensor`. Must be one of the following types: `half`, `float32`, `float64`, `uint8`, `int8`, `int16`, `int32`, `int64`, `complex64`, `quint8`, `qint8`, `qint32`, `string`, `bool`.
 *  <b>`y`</b>: A `Tensor`. Must have the same type as `x`.
 *  <b>`name`</b>: A name for the operation (optional).
 
@@ -758,7 +639,7 @@ Returns which elements of x are finite.
 ##### Args:
 
 
-*  <b>`x`</b>: A `Tensor`. Must be one of the following types: `float32`, `float64`.
+*  <b>`x`</b>: A `Tensor`. Must be one of the following types: `half`, `float32`, `float64`.
 *  <b>`name`</b>: A name for the operation (optional).
 
 ##### Returns:
@@ -775,7 +656,7 @@ Returns which elements of x are Inf.
 ##### Args:
 
 
-*  <b>`x`</b>: A `Tensor`. Must be one of the following types: `float32`, `float64`.
+*  <b>`x`</b>: A `Tensor`. Must be one of the following types: `half`, `float32`, `float64`.
 *  <b>`name`</b>: A name for the operation (optional).
 
 ##### Returns:
@@ -792,7 +673,7 @@ Returns which elements of x are NaN.
 ##### Args:
 
 
-*  <b>`x`</b>: A `Tensor`. Must be one of the following types: `float32`, `float64`.
+*  <b>`x`</b>: A `Tensor`. Must be one of the following types: `half`, `float32`, `float64`.
 *  <b>`name`</b>: A name for the operation (optional).
 
 ##### Returns:
@@ -830,7 +711,7 @@ that are not a number (NaN) or infinity (Inf). Otherwise, passes `tensor` as-is.
 ##### Args:
 
 
-*  <b>`tensor`</b>: A `Tensor`. Must be one of the following types: `float32`, `float64`.
+*  <b>`tensor`</b>: A `Tensor`. Must be one of the following types: `half`, `float32`, `float64`.
 *  <b>`message`</b>: A `string`. Prefix of the error message.
 *  <b>`name`</b>: A name for the operation (optional).
 
@@ -864,6 +745,14 @@ Asserts that the given condition is true.
 If `condition` evaluates to false, print the list of tensors in `data`.
 `summarize` determines how many entries of the tensors to print.
 
+NOTE: To ensure that Assert executes, one usually attaches a dependency:
+
+```python
+ # Ensure maximum element of x is smaller or equal to 1
+assert_op = tf.Assert(tf.less_equal(tf.reduce_max(x), 1.), [x])
+x = tf.with_dependencies([assert_op], x)
+```
+
 ##### Args:
 
 
@@ -871,6 +760,12 @@ If `condition` evaluates to false, print the list of tensors in `data`.
 *  <b>`data`</b>: The tensors to print out when condition is false.
 *  <b>`summarize`</b>: Print this many entries of each tensor.
 *  <b>`name`</b>: A name for this operation (optional).
+
+##### Returns:
+
+
+*  <b>`assert_op`</b>: An `Operation` that, when executed, raises a
+  `tf.errors.InvalidArgumentError` if `condition` is not true.
 
 
 - - -

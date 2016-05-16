@@ -17,7 +17,7 @@ limitations under the License.
 
 #define EIGEN_USE_THREADS
 
-#include <limits.h>
+#include <limits>
 #include <vector>
 
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
@@ -27,10 +27,13 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/kernels/bounds_check.h"
 #include "tensorflow/core/kernels/concat_lib.h"
 #include "tensorflow/core/kernels/split_lib.h"
 #include "tensorflow/core/kernels/tensor_array.h"
+#include "tensorflow/core/lib/core/refcount.h"
 #include "tensorflow/core/lib/core/errors.h"
+#include "tensorflow/core/lib/core/refcount.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/thread_annotations.h"
@@ -105,7 +108,6 @@ class TensorArrayCreationOp : public OpKernel {
     TensorArray* output_tensor_array;
     OP_REQUIRES_OK(ctx, CreateTensorArray(ctx, rm, &tensor_array_output_handle,
                                           &output_tensor_array));
-
     ctx->set_output_ref(0, output_tensor_array->mu(),
                         output_tensor_array->handle());
   }
@@ -125,6 +127,8 @@ class TensorArrayOp : public TensorArrayCreationOp {
       : TensorArrayCreationOp(context) {
     OP_REQUIRES_OK(context, context->GetAttr("dtype", &dtype_));
     OP_REQUIRES_OK(context, context->GetAttr("dynamic_size", &dynamic_size_));
+    OP_REQUIRES_OK(context,
+                   context->GetAttr("clear_after_read", &clear_after_read_));
     OP_REQUIRES_OK(context,
                    context->GetAttr("tensor_array_name", &tensor_array_name_));
     if (tensor_array_name_ == "") tensor_array_name_ = name();
@@ -148,7 +152,8 @@ class TensorArrayOp : public TensorArrayCreationOp {
     handle(1) = tensor_array_name_;
 
     TensorArray* tensor_array = new TensorArray(
-        dtype_, *tensor_array_output_handle, size, dynamic_size_);
+        dtype_, *tensor_array_output_handle, size, dynamic_size_,
+        false /* multiple_writes_aggregate */, clear_after_read_);
 
     TF_RETURN_IF_ERROR(rm->Create(handle(0), tensor_array_name_, tensor_array));
 
@@ -160,6 +165,7 @@ class TensorArrayOp : public TensorArrayCreationOp {
  private:
   DataType dtype_;
   bool dynamic_size_;
+  bool clear_after_read_;
   string tensor_array_name_;  // The name used to create the TensorArray.
 
   TF_DISALLOW_COPY_AND_ASSIGN(TensorArrayOp);
@@ -213,22 +219,34 @@ class TensorArrayGradOp : public TensorArrayCreationOp {
     TensorArray* tensor_array;
     int32 array_size;
     TF_RETURN_IF_ERROR(rm->Lookup(container, tensor_array_name, &tensor_array));
+    core::ScopedUnref unref(tensor_array);
 
     // Once gradients are being calculated, the forward TensorArray
     // may no longer be resized by new Writes.
     tensor_array->DisableDynamicSize();
     TF_RETURN_IF_ERROR(tensor_array->Size(&array_size));
 
+    if (!tensor_array->GradientsAllowed()) {
+      return errors::InvalidArgument(
+          "Unable to create a gradients TensorArray for ", tensor_array_name,
+          ".  Perhaps you used the multiple_writes_aggregate flag on a "
+          "previous write?  Gradient calculation is impossible when multiple "
+          "writes are performed to the same index.");
+    }
+
     auto creator = [this, tensor_array, array_size,
                     tensor_array_output_handle](TensorArray** ret) {
-      *ret =
-          new TensorArray(tensor_array->ElemType(), *tensor_array_output_handle,
-                          array_size, false /* dynamic_size */);
+      *ret = new TensorArray(
+          tensor_array->ElemType(), *tensor_array_output_handle, array_size,
+          false /* dynamic_size */, true /* multiple_writes_aggregate */,
+          true /* close_after_read */);
+      TF_RETURN_IF_ERROR((*ret)->CopyShapesFrom(tensor_array));
       return Status::OK();
     };
 
     Status s = rm->LookupOrCreate<TensorArray>(
         output_handle(0), output_handle(1), output_tensor_array, creator);
+    (*output_tensor_array)->Unref();
 
     return s;
   }
@@ -274,6 +292,7 @@ class TensorArrayWriteOp : public OpKernel {
 
     TensorArray* tensor_array = nullptr;
     OP_REQUIRES_OK(ctx, GetTensorArray("handle", ctx, &tensor_array));
+    core::ScopedUnref unref(tensor_array);
     const int32 index = tensor_index->scalar<int32>()();
     OP_REQUIRES(
         ctx, tensor_value->dtype() == tensor_array->ElemType(),
@@ -282,10 +301,10 @@ class TensorArrayWriteOp : public OpKernel {
                                 " but Op is trying to write dtype ",
                                 DataTypeString(tensor_value->dtype()), "."));
     PersistentTensor persistent_tensor(*tensor_value);
-    OP_REQUIRES_OK(ctx, tensor_array->Write(ctx, index, &persistent_tensor));
+    Status s = tensor_array->WriteOrAggregate<Device, T>(ctx, index,
+                                                         &persistent_tensor);
+    OP_REQUIRES_OK(ctx, s);
   }
-
-  bool IsExpensive() override { return false; }
 };
 
 #define REGISTER_WRITE(type)                                                 \
@@ -315,6 +334,7 @@ REGISTER_GPU(bfloat16);
 
 // READ ***********************************************************************
 
+template <typename Device, typename T>
 class TensorArrayReadOp : public OpKernel {
  public:
   explicit TensorArrayReadOp(OpKernelConstruction* context)
@@ -335,6 +355,7 @@ class TensorArrayReadOp : public OpKernel {
 
     TensorArray* tensor_array = nullptr;
     OP_REQUIRES_OK(ctx, GetTensorArray("handle", ctx, &tensor_array));
+    core::ScopedUnref unref(tensor_array);
 
     const int32 index = tensor_index->scalar<int32>()();
     OP_REQUIRES(
@@ -343,18 +364,24 @@ class TensorArrayReadOp : public OpKernel {
             "TensorArray dtype is ", DataTypeString(tensor_array->ElemType()),
             " but Op requested dtype ", DataTypeString(dtype_), "."));
     PersistentTensor value;
-    OP_REQUIRES_OK(ctx, tensor_array->Read(index, &value));
+    Status s = tensor_array->Read<Device, T>(ctx, index, &value);
+    OP_REQUIRES_OK(ctx, s);
     ctx->set_output(0, *value.AccessTensor(ctx));
   }
-
-  bool IsExpensive() override { return false; }
 
  private:
   DataType dtype_;
 };
 
-REGISTER_KERNEL_BUILDER(Name("TensorArrayRead").Device(DEVICE_CPU),
-                        TensorArrayReadOp);
+#define REGISTER_READ(type)                                   \
+  REGISTER_KERNEL_BUILDER(Name("TensorArrayRead")             \
+                              .Device(DEVICE_CPU)             \
+                              .TypeConstraint<type>("dtype"), \
+                          TensorArrayReadOp<CPUDevice, type>);
+
+TF_CALL_ALL_TYPES(REGISTER_READ)
+
+#undef REGISTER_READ
 
 #if GOOGLE_CUDA
 
@@ -364,7 +391,7 @@ REGISTER_KERNEL_BUILDER(Name("TensorArrayRead").Device(DEVICE_CPU),
                               .TypeConstraint<type>("dtype") \
                               .HostMemory("handle")          \
                               .HostMemory("index"),          \
-                          TensorArrayReadOp);
+                          TensorArrayReadOp<GPUDevice, type>);
 
 TF_CALL_GPU_NUMBER_TYPES(REGISTER_GPU);
 REGISTER_GPU(bfloat16);
@@ -392,6 +419,8 @@ class TensorArrayPackOp : public OpKernel {
 
     TensorArray* tensor_array = nullptr;
     OP_REQUIRES_OK(ctx, GetTensorArray("handle", ctx, &tensor_array));
+
+    core::ScopedUnref unref(tensor_array);
     int32 array_size;
     OP_REQUIRES_OK(ctx, tensor_array->Size(&array_size));
     OP_REQUIRES(
@@ -410,7 +439,8 @@ class TensorArrayPackOp : public OpKernel {
     // Read all the PersistentTensors into a vector to keep track of
     // their memory.
     std::vector<PersistentTensor> values;
-    OP_REQUIRES_OK(ctx, tensor_array->ReadMany(&values));
+    Status s = tensor_array->ReadMany<Device, T>(ctx, &values);
+    OP_REQUIRES_OK(ctx, s);
 
     const Tensor* value_0_t = values[0].AccessTensor(ctx);
     TensorShape output_shape(value_0_t->shape());
@@ -440,7 +470,16 @@ class TensorArrayPackOp : public OpKernel {
     }
 
     if (std::is_same<Device, GPUDevice>::value) {
-      ConcatGPU<T>(ctx->eigen_gpu_device(), input_tensors_flat, &output_flat);
+      // Switching indexing to int64 might cause performance issues.
+      // Hence, we keep int32 indexing in the GPU kernel unless we need to
+      // switch to int64.
+      if (output_shape.num_elements() < std::numeric_limits<int32>::max()) {
+        ConcatGPU32<T>(ctx->eigen_gpu_device(), input_tensors_flat,
+                       &output_flat);
+      } else {
+        ConcatGPU64<T>(ctx->eigen_gpu_device(), input_tensors_flat,
+                       &output_flat);
+      }
     } else {
       ConcatCPU<T>(ctx->device(), input_tensors_flat, &output_flat);
     }
@@ -509,6 +548,7 @@ class TensorArrayConcatOp : public OpKernel {
 
     TensorArray* tensor_array = nullptr;
     OP_REQUIRES_OK(ctx, GetTensorArray("handle", ctx, &tensor_array));
+    core::ScopedUnref unref(tensor_array);
     OP_REQUIRES(
         ctx, dtype_ == tensor_array->ElemType(),
         errors::InvalidArgument(
@@ -528,7 +568,8 @@ class TensorArrayConcatOp : public OpKernel {
     // Read all the PersistentTensors into a vector to keep track of
     // their memory.
     std::vector<PersistentTensor> values;
-    OP_REQUIRES_OK(ctx, tensor_array->ReadMany(&values));
+    Status s = tensor_array->ReadMany<Device, T>(ctx, &values);
+    OP_REQUIRES_OK(ctx, s);
 
     std::vector<const Tensor*> value_tensors;
     value_tensors.resize(values.size());
@@ -576,7 +617,6 @@ class TensorArrayConcatOp : public OpKernel {
     OP_REQUIRES_OK(ctx, ctx->allocate_output(0, output_shape, &output_tensor));
     ConstMatrixVector input_tensors_flat;
     input_tensors_flat.reserve(values.size());
-
     for (size_t i = 0; i < values.size(); ++i) {
       const Tensor* value_t = value_tensors[i];
       if (value_t->NumElements() > 0) {
@@ -589,7 +629,16 @@ class TensorArrayConcatOp : public OpKernel {
       auto output_flat =
           output_tensor->shaped<T, 2>({1, output_shape.num_elements()});
       if (std::is_same<Device, GPUDevice>::value) {
-        ConcatGPU<T>(ctx->eigen_gpu_device(), input_tensors_flat, &output_flat);
+        // Switching indexing to int64 might cause performance issues.
+        // Hence, we keep int32 indexing in the GPU kernel unless we need to
+        // switch to int64.
+        if (output_shape.num_elements() < std::numeric_limits<int32>::max()) {
+          ConcatGPU32<T>(ctx->eigen_gpu_device(), input_tensors_flat,
+                         &output_flat);
+        } else {
+          ConcatGPU64<T>(ctx->eigen_gpu_device(), input_tensors_flat,
+                         &output_flat);
+        }
       } else {
         ConcatCPU<T>(ctx->device(), input_tensors_flat, &output_flat);
       }
@@ -655,6 +704,7 @@ class TensorArrayUnpackOp : public OpKernel {
 
     TensorArray* tensor_array = nullptr;
     OP_REQUIRES_OK(ctx, GetTensorArray("handle", ctx, &tensor_array));
+    core::ScopedUnref unref(tensor_array);
     const Tensor* tensor_value;
     OP_REQUIRES_OK(ctx, ctx->input("value", &tensor_value));
 
@@ -664,9 +714,13 @@ class TensorArrayUnpackOp : public OpKernel {
 
     TensorShape element_shape(tensor_value->shape());
 
+    OP_REQUIRES(ctx, FastBoundsCheck(element_shape.dim_size(0),
+                                     std::numeric_limits<int32>::max()),
+                errors::InvalidArgument("tensor dim0 too large to unpack"));
+
     // If dynamic size, we may have to resize the TensorArray to fit.
     if (dynamic_size && array_size < element_shape.dim_size(0)) {
-      array_size = element_shape.dim_size(0);
+      array_size = static_cast<int32>(element_shape.dim_size(0));
     }
 
     OP_REQUIRES(
@@ -706,13 +760,18 @@ class TensorArrayUnpackOp : public OpKernel {
           tensor_value_i->shaped<T, 3>({1, 1, element_shape.num_elements()});
       indices[1] = i;
 
-      functor::Split<Device, T>()(ctx->eigen_device<Device>(), tensor_value_i_t,
-                                  tensor_value_t, indices, sizes);
+      if (element_shape.num_elements() > 0) {
+        functor::Split<Device, T>()(ctx->eigen_device<Device>(),
+                                    tensor_value_i_t, tensor_value_t, indices,
+                                    sizes);
+      }
 
       write_values.push_back(persistent_tensor);
     }
 
-    OP_REQUIRES_OK(ctx, tensor_array->WriteMany(ctx, &write_values));
+    Status s =
+        tensor_array->WriteOrAggregateMany<Device, T>(ctx, &write_values);
+    OP_REQUIRES_OK(ctx, s);
   }
 };
 
@@ -751,6 +810,7 @@ class TensorArraySplitOp : public OpKernel {
 
     TensorArray* tensor_array = nullptr;
     OP_REQUIRES_OK(ctx, GetTensorArray("handle", ctx, &tensor_array));
+    core::ScopedUnref unref(tensor_array);
     const Tensor* tensor_value;
     OP_REQUIRES_OK(ctx, ctx->input("value", &tensor_value));
     const Tensor* tensor_lengths;
@@ -760,12 +820,16 @@ class TensorArraySplitOp : public OpKernel {
                 errors::InvalidArgument(
                     "Expected lengths to be a vector, received shape: ",
                     tensor_lengths->shape().DebugString()));
+    OP_REQUIRES(ctx, FastBoundsCheck(tensor_lengths->NumElements(),
+                                     std::numeric_limits<int32>::max()),
+                errors::InvalidArgument(
+                    "Expected lengths to have < max int32 entries"));
 
+    int32 num_tensors = static_cast<int32>(tensor_lengths->NumElements());
     auto tensor_lengths_t = tensor_lengths->vec<int64>();
     std::vector<int64> cumulative_lengths;
-    int32 num_tensors = tensor_lengths->NumElements();
     cumulative_lengths.reserve(num_tensors);
-    int32 total_length = 0;
+    int64 total_length = 0;
     for (int i = 0; i < num_tensors; ++i) {
       total_length += tensor_lengths_t(i);
       cumulative_lengths.push_back(total_length);
@@ -824,7 +888,7 @@ class TensorArraySplitOp : public OpKernel {
       Tensor* tensor_value_i;
       PersistentTensor persistent_tensor;
 
-      int32 previous_length = (i == 0) ? 0 : cumulative_lengths[i - 1];
+      int64 previous_length = (i == 0) ? 0 : cumulative_lengths[i - 1];
       Eigen::DSizes<Eigen::DenseIndex, 3> indices{0, previous_length, 0};
       Eigen::DSizes<Eigen::DenseIndex, 3> sizes{1, tensor_lengths_t(i),
                                                 elements_per_row};
@@ -845,7 +909,9 @@ class TensorArraySplitOp : public OpKernel {
       write_values.push_back(persistent_tensor);
     }
 
-    OP_REQUIRES_OK(ctx, tensor_array->WriteMany(ctx, &write_values));
+    Status s =
+        tensor_array->WriteOrAggregateMany<Device, T>(ctx, &write_values);
+    OP_REQUIRES_OK(ctx, s);
   }
 };
 
@@ -883,6 +949,7 @@ class TensorArraySizeOp : public OpKernel {
   void Compute(OpKernelContext* ctx) override {
     TensorArray* tensor_array;
     OP_REQUIRES_OK(ctx, GetTensorArray("handle", ctx, &tensor_array));
+    core::ScopedUnref unref(tensor_array);
     Tensor* output = nullptr;
     OP_REQUIRES_OK(ctx, ctx->allocate_output(0, TensorShape({}), &output));
     OP_REQUIRES_OK(ctx, tensor_array->Size(&(output->scalar<int32>()())));
@@ -913,6 +980,7 @@ class TensorArrayCloseOp : public OpKernel {
   void Compute(OpKernelContext* ctx) override {
     TensorArray* tensor_array;
     OP_REQUIRES_OK(ctx, GetTensorArray("handle", ctx, &tensor_array));
+    core::ScopedUnref unref(tensor_array);
     // Instead of deleting this TA from the ResourceManager, we just
     // clear it away and mark it as closed.  The remaining memory
     // consumed store its mutex and handle Tensor.  This will be

@@ -19,9 +19,11 @@ from __future__ import division
 from __future__ import print_function
 
 from tensorflow.core.framework import variable_pb2
+from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import state_ops
 
 
@@ -56,7 +58,7 @@ class Variable(object):
   y = tf.matmul(w, ...another variable or tensor...)
 
   # The overloaded operators are available too.
-  z = tf.sigmoid(w + b)
+  z = tf.sigmoid(w + y)
 
   # Assign a new value to the variable with `assign()` or a related method.
   w.assign(w + 1.0)
@@ -156,9 +158,12 @@ class Variable(object):
     variable to its initial value.
 
     Args:
-      initial_value: A `Tensor`, or Python object convertible to a `Tensor`.
-        The initial value for the Variable. Must have a shape specified unless
-        `validate_shape` is set to False.
+      initial_value: A `Tensor`, or Python object convertible to a `Tensor`,
+        which is the initial value for the Variable. The initial value must have
+        a shape specified unless `validate_shape` is set to False. Can also be a
+        callable with no argument that returns the initial value when called. In
+        that case, `dtype` must be specified. (Note that initializer functions
+        from init_ops.py must first be bound to a shape before being used here.)
       trainable: If `True`, the default, also adds the variable to the graph
         collection `GraphKeys.TRAINABLE_VARIABLES`. This collection is used as
         the default list of variables to use by the `Optimizer` classes.
@@ -211,9 +216,12 @@ class Variable(object):
     """Creates a new variable from arguments.
 
     Args:
-      initial_value: A `Tensor`, or Python object convertible to a `Tensor`.
-        The initial value for the Variable. Must have a shape specified unless
-        `validate_shape` is set to False.
+      initial_value: A `Tensor`, or Python object convertible to a `Tensor`,
+        which is the initial value for the Variable. The initial value must have
+        a shape specified unless `validate_shape` is set to False. Can also be a
+        callable with no argument that returns the initial value when called. In
+        that case, `dtype` must be specified. (Note that initializer functions
+        from init_ops.py must first be bound to a shape before being used here.)
       trainable: If `True`, the default, also adds the variable to the graph
         collection `GraphKeys.TRAINABLE_VARIABLES`. This collection is used as
         the default list of variables to use by the `Optimizer` classes.
@@ -240,29 +248,65 @@ class Variable(object):
     """
     if initial_value is None:
       raise ValueError("initial_value must be specified.")
+    init_from_fn = callable(initial_value)
+    if init_from_fn and dtype is None:
+      raise ValueError(
+          "dtype must also be specified when initial_value is callable.")
+
     if collections is None:
       collections = [ops.GraphKeys.VARIABLES]
     if trainable and ops.GraphKeys.TRAINABLE_VARIABLES not in collections:
       collections = list(collections) + [ops.GraphKeys.TRAINABLE_VARIABLES]
     with ops.control_dependencies(None):
-      with ops.op_scope([initial_value], name, "Variable") as name:
-        self._initial_value = ops.convert_to_tensor(initial_value,
-                                                    name="initial_value",
-                                                    dtype=dtype)
-        initial_value_shape = self._initial_value.get_shape()
-        if validate_shape and not initial_value_shape.is_fully_defined():
-          raise ValueError("initial_value must have a shape specified: %s"
-                           % self._initial_value)
-        shape_to_set = initial_value_shape if validate_shape else []
+      with ops.op_scope(
+          [] if init_from_fn else [initial_value], name, "Variable") as name:
 
-        self._variable = state_ops.variable_op(
-            shape_to_set, self._initial_value.dtype.base_dtype,
-            set_shape=validate_shape, name=name)
+        # Get the initial value from a callable function. The real shape of the
+        # variable will be set later, since under the init_from_fn case, the
+        # shape won't be known until after the function is invoked.
+        if init_from_fn:
+          self._variable = state_ops.variable_op(
+              [],
+              dtype.base_dtype,
+              set_shape=False,
+              name=name)
+          with ops.colocate_with(self._variable.op):
+            with ops.name_scope("Initializer"):
+              # Colocate the tensors created by the initial_value() function
+              # with the variable itself.
+              self._initial_value = ops.convert_to_tensor(initial_value(),
+                                                          name="initial_value",
+                                                          dtype=dtype)
 
-        with ops.colocate_with(self._variable.op):
-          self._initializer_op = state_ops.assign(
-              self._variable, self._initial_value,
-              validate_shape=validate_shape).op
+        # Or get the initial value from a Tensor or Python object.
+        else:
+          self._initial_value = ops.convert_to_tensor(initial_value,
+                                                      name="initial_value",
+                                                      dtype=dtype)
+          # In this case, the variable op can't be created until after the
+          # initial_value has been converted to a Tensor with a known type.
+          self._variable = state_ops.variable_op(
+              [],
+              self._initial_value.dtype.base_dtype,
+              set_shape=False,
+              name=name)
+
+        # Manually overrides the variable's shape with the initial value's.
+        if validate_shape:
+          initial_value_shape = self._initial_value.get_shape()
+          if not initial_value_shape.is_fully_defined():
+            raise ValueError("initial_value must have a shape specified: %s"
+                             % self._initial_value)
+          self._variable.set_shape(initial_value_shape)
+          # TODO(b/28152992): Remove the below hack modifying the node_def shape
+          # directly once set_shape() handles it.
+          self._variable.op.node_def.attr["shape"].shape.CopyFrom(
+              initial_value_shape.as_proto())
+
+        # Assigns initial value.
+        self._initializer_op = state_ops.assign(
+            self._variable, self._initial_value,
+            validate_shape=validate_shape).op
 
         # TODO(vrv): Change this class to not take caching_device, but
         # to take the op to colocate the snapshot with, so we can use
@@ -422,6 +466,20 @@ class Variable(object):
         else:
           with ops.colocate_with(self._variable.op):
             return array_ops.identity(self._variable)
+
+  @property
+  def initial_value(self):
+    """Returns the Tensor used as the initial value for the variable.
+
+    Note that this is different from `initialized_value()` which runs
+    the op that initializes the variable before returning its value.
+    This method returns the tensor that is used by the op that initializes
+    the variable.
+
+    Returns:
+      A `Tensor`.
+    """
+    return self._initial_value
 
   def assign(self, value, use_locking=False):
     """Assigns a new value to the variable.
@@ -784,8 +842,24 @@ def initialize_local_variables():
   return initialize_variables(local_variables())
 
 
+def is_variable_initialized(variable):
+  """Tests if a variable has been initialized.
+
+  Args:
+    variable: A `Variable`.
+
+  Returns:
+    Returns a scalar boolean Tensor, `True` if the variable has been
+    initialized, `False` otherwise.
+  """
+  return state_ops.is_variable_initialized(variable)
+
+
 def assert_variables_initialized(var_list=None):
   """Returns an Op to check if variables are initialized.
+
+  NOTE: This function is obsolete and will be removed in 6 months.  Please
+  change your implementation to use `report_uninitialized_variables()`.
 
   When run, the returned Op will raise the exception `FailedPreconditionError`
   if any of the variables has not yet been initialized.
@@ -820,6 +894,45 @@ def assert_variables_initialized(var_list=None):
       return ranks[0]
     else:
       return array_ops.pack(ranks)
+
+
+def report_uninitialized_variables(var_list=None,
+                                   name="report_uninitialized_variables"):
+  """Adds ops to list the names of uninitialized variables.
+
+  When run, it returns a 1-D tensor containing the names of uninitialized
+  variables if there are any, or an empty array if there are none.
+
+  Args:
+    var_list: List of `Variable` objects to check. Defaults to the
+      value of `all_variables() + local_variables()`
+    name: Optional name of the `Operation`.
+
+  Returns:
+    A 1-D tensor containing names of the unintialized variables, or an empty 1-D
+    tensor if there are no variables or no uninitialized variables.
+  """
+  if var_list is None:
+    var_list = all_variables() + local_variables()
+  # Backwards compatibility for old-style variables. TODO(touts): remove.
+  if not var_list:
+    var_list = []
+    for op in ops.get_default_graph().get_operations():
+      if op.type in ["Variable", "AutoReloadVariable"]:
+        var_list.append(op.outputs[0])
+  if not var_list:
+    # Return an empty tensor so we only need to check for returned tensor
+    # size being 0 as an indication of model ready.
+    return array_ops.constant([], dtype=dtypes.string, name=name)
+  else:
+    # Get a 1-D boolean tensor listing whether each variable is initialized.
+    variables_mask = math_ops.logical_not(array_ops.pack(
+        [state_ops.is_variable_initialized(v) for v in var_list]))
+    # Get a 1-D string tensor containing all the variable names.
+    variable_names_tensor = array_ops.constant([s.op.name for s in var_list])
+    # Return a 1-D tensor containing all the names of uninitialized variables.
+    return array_ops.boolean_mask(variable_names_tensor, variables_mask,
+                                  name=name)
 
 
 # pylint: disable=protected-access
