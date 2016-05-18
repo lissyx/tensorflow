@@ -40,7 +40,6 @@ class CTCLossOp<GPUDevice> : public OpKernel {
   }
 
   void Compute(OpKernelContext* ctx) override {
-    printf("gpu ctc\n");
 
     // Calculate the score analytically
 
