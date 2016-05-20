@@ -20,6 +20,7 @@ class LookaheadOp<T, 1> : public OpKernel {
 
   void Compute(OpKernelContext* context) override {
     // Grab the input tensor
+    printf("gpu lookahead\n");
     const Tensor& input_tensor = context->input(0);
     auto input = input_tensor.tensor<T, 3>();
     const Tensor& filter_tensor = context->input(1);

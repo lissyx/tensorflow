@@ -24,6 +24,7 @@ limitations under the License.
 #include "tensorflow/core/util/ctc/ctc_loss_calculator.h"
 #include "tensorflow/core/kernels/ctc_loss_op.h"
 #include "tensorflow/core/util/sparse/sparse_tensor.h"
+#include "tensorflow/core/kernels/warp-ctc/tests/test.h"
 
 namespace tensorflow {
 
@@ -48,6 +49,7 @@ class CTCLossOp<CPUDevice> : public OpKernel {
   }
 
   void Compute(OpKernelContext* ctx) override {
+    printf("tensorflow cpu ctc\n");
     const Tensor* inputs;
     const Tensor* labels_indices;
     const Tensor* labels_values;

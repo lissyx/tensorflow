@@ -536,6 +536,14 @@ tf_gen_op_wrapper_py(
 )
 
 tf_gen_op_wrapper_py(
+    name = "warpctc_ops",
+    hidden = [
+        "WarpCTCLoss",
+    ],
+    require_shape_functions = True,
+)
+
+tf_gen_op_wrapper_py(
     name = "lookahead_ops",
     hidden = [
         "Lookaheadcpu",
@@ -791,6 +799,7 @@ py_library(
         "ops/gen_array_ops.py",
         "ops/gen_control_flow_ops.py",
         "ops/gen_ctc_ops.py",
+        "ops/gen_warpctc_ops.py",
         "ops/gen_lookahead_ops.py",
         "ops/gen_data_flow_ops.py",
         "ops/gen_image_ops.py",

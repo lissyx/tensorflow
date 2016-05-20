@@ -15,15 +15,23 @@ limitations under the License.
 
 // See docs in ../ops/ctc_ops.cc.
 
-#include "tensorflow/core/kernels/ctc_loss_op.h"
+#include "tensorflow/core/framework/op.h"
+#include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/kernels/bounds_check.h"
+#include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/macros.h"
+#include "tensorflow/core/kernels/warpctc_loss_op.h"
+#include "tensorflow/core/util/sparse/sparse_tensor.h"
 #include "tensorflow/core/kernels/warp-ctc/tests/test.h"
 
 namespace tensorflow {
 
+typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
 
 template<>
-class CTCLossOp<GPUDevice> : public OpKernel {
+class WarpCTCLossOp<CPUDevice> : public OpKernel {
   typedef Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic,
                                          Eigen::RowMajor> >
       InputMap;
@@ -32,7 +40,7 @@ class CTCLossOp<GPUDevice> : public OpKernel {
       OutputMap;
 
  public:
-  explicit CTCLossOp(OpKernelConstruction* ctx) : OpKernel(ctx) {
+  explicit WarpCTCLossOp(OpKernelConstruction* ctx) : OpKernel(ctx) {
     OP_REQUIRES_OK(ctx, ctx->GetAttr("preprocess_collapse_repeated",
                                      &preprocess_collapse_repeated_));
     OP_REQUIRES_OK(ctx,
@@ -40,19 +48,13 @@ class CTCLossOp<GPUDevice> : public OpKernel {
   }
 
   void Compute(OpKernelContext* ctx) override {
-
-    // Calculate the score analytically
-
-    cudaStream_t stream;
-    throw_on_error(cudaStreamCreate(&stream),
-                   "cudaStreamCreate");
-
+    printf("warp cpu ctc\n");
     const Tensor& input_tensor = ctx->input(0);
     const Tensor& labels_indices_tensor = ctx->input(1);
     const Tensor& labels_values_tensor = ctx->input(2);
     const Tensor& seq_len_tensor = ctx->input(3);
     auto input = input_tensor.tensor<float, 3>();
-    float *activations_gpu = (float*)input.data();
+    float *activations_cpu = (float*)input.data();
     const TensorShape& inputs_shape = input_tensor.shape();
     const int64 max_time = inputs_shape.dim_size(0);
     const int64 batch_size = inputs_shape.dim_size(1);
@@ -69,8 +71,8 @@ class CTCLossOp<GPUDevice> : public OpKernel {
     for(int i = 0; i < labels_indices_tensor.dim_size(0); i++) {
       int64 first;
       int label_of_first;
-      cudaMemcpy(&first, &labels_indices(i,0), sizeof(int64), cudaMemcpyDeviceToHost);
-      cudaMemcpy(&label_of_first, &labels_values(i), sizeof(int), cudaMemcpyDeviceToHost);
+      first = labels_indices(i,0);
+      label_of_first = labels_values(i);
       labels.push_back(label_of_first);
       if (first == last_first) {
         sum++;
@@ -84,24 +86,21 @@ class CTCLossOp<GPUDevice> : public OpKernel {
       label_lengths.push_back(sum);
     }
     int size_of_lengths = seq_len_tensor.dim_size(0);
-    int lengths[size_of_lengths];
-    cudaMemcpy(lengths, seq_len.data(), size_of_lengths * sizeof(int), cudaMemcpyDeviceToHost);
+    const int* lengths = seq_len.data();
 
     float score;
 
     ctcComputeInfo info;
-    info.loc = CTC_GPU;
-    info.stream = stream;
+    info.loc = CTC_CPU;
+    info.num_threads = 1;
 
-    size_t gpu_alloc_bytes;
-    throw_on_error(get_workspace_size(label_lengths.data(), (const int*)&lengths,
+    size_t cpu_alloc_bytes;
+    throw_on_error(get_workspace_size(label_lengths.data(), lengths,
                                       alphabet_size, size_of_lengths, info,
-                                      &gpu_alloc_bytes),
+                                      &cpu_alloc_bytes),
                    "Error: get_workspace_size in small_test");
 
-    char *ctc_gpu_workspace;
-    throw_on_error(cudaMalloc(&ctc_gpu_workspace, gpu_alloc_bytes),
-                   "cudaMalloc");
+    void* ctc_cpu_workspace = std::malloc(cpu_alloc_bytes);
 
     Tensor* loss = nullptr;
     OP_REQUIRES_OK(ctx, ctx->allocate_output("loss", seq_len_tensor.shape(), &loss));
@@ -111,22 +110,15 @@ class CTCLossOp<GPUDevice> : public OpKernel {
     OP_REQUIRES_OK(ctx,
                    ctx->allocate_output("gradient", inputs_shape, &gradient));
     auto gradient_t = gradient->tensor<float, 3>();
-    float loss_cpu[size_of_lengths];
-    throw_on_error(compute_ctc_loss(activations_gpu, gradient_t.data(),
+    throw_on_error(compute_ctc_loss(activations_cpu, gradient_t.data(),
                                     labels.data(), label_lengths.data(),
-                                    (const int *)&lengths,
+                                    lengths,
                                     alphabet_size,
                                     size_of_lengths,
-                                    loss_cpu,
-                                    ctc_gpu_workspace,
+                                    loss_t.data(),
+                                    ctc_cpu_workspace,
                                     info),
                    "Error: compute_ctc_loss in small_test");
-    cudaMemcpy(loss_t.data(), loss_cpu, size_of_lengths * sizeof(float), cudaMemcpyHostToDevice);
-
-    throw_on_error(cudaFree(ctc_gpu_workspace),
-                   "cudaFree");
-    throw_on_error(cudaStreamDestroy(stream),
-                   "cudaStreamDestroy");
   }
 
  private:
@@ -134,6 +126,6 @@ class CTCLossOp<GPUDevice> : public OpKernel {
   bool ctc_merge_repeated_;
 };
 
-REGISTER_KERNEL_BUILDER(Name("CTCLoss").Device(DEVICE_GPU), CTCLossOp<GPUDevice>);
+REGISTER_KERNEL_BUILDER(Name("WarpCTCLoss").Device(DEVICE_CPU), WarpCTCLossOp<CPUDevice>);
 
 }  // end namespace tensorflow

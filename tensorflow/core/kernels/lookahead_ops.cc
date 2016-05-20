@@ -13,6 +13,7 @@ class LookaheadOp<T, 0> : public OpKernel {
   }
 
   void Compute(OpKernelContext* context) override {
+    printf("lookahead cpu\n");
     // Grab the input tensor
     const Tensor& input_tensor = context->input(0);
     auto input = input_tensor.tensor<T, 3>();
