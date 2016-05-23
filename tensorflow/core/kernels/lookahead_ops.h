@@ -1,4 +1,4 @@
-
+// check equation 11 on http://arxiv.org/pdf/1512.02595v1.pdf (page 11th)
 
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_kernel.h"

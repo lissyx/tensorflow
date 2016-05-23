@@ -14,7 +14,7 @@
 # ==============================================================================
 
 # pylint: disable=unused-import
-"""CTC (Connectionist Temporal Classification) Operations."""
+"""Lookahead Operations."""
 
 from __future__ import absolute_import
 from __future__ import division
@@ -32,10 +32,6 @@ from tensorflow.python.ops import gen_lookahead_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops.nn_grad import _BroadcastMul
 
-
-# NOTE(ebrevdo): We redefine CTCLoss from gen_ctc_ops to only return
-# the first output. The second output is only used for the gradient.
-# pylint: disable=protected-access, invalid-name
 
 def lookaheadcpu(x1, x2):
   return gen_lookahead_ops._lookaheadcpu(x1, x2)
@@ -56,28 +52,28 @@ def _Lookaheadcpu(op):
 
 @ops.RegisterGradient("Lookaheadcpu")
 def _Lookaheadcpu_grad(op, grad):
-  """The derivatives for deconvolution.
+  """
 
   Args:
-    op: the Deconvolution op.
-    grad: the tensor representing the gradient w.r.t. the output
+    op: the lookahead op.
+    grad: the output grad
 
   Returns:
-    the gradients w.r.t. the input and the filter
+    the input grad and the filter grad
   """
   return tf.contrib.lookahead.lookaheadgradcpu(
               op.inputs[0],op.inputs[1],grad)
 
 @ops.RegisterGradient("Lookaheadgpu")
 def _Lookaheadgpu_grad(op, grad):
-  """The derivatives for deconvolution.
+  """
 
   Args:
-    op: the Deconvolution op.
-    grad: the tensor representing the gradient w.r.t. the output
+    op: the lookahead op.
+    grad: the output grad
 
   Returns:
-    the gradients w.r.t. the input and the filter
+    the input grad and the filter grad
   """
   return tf.contrib.lookahead.lookaheadgradgpu(
               op.inputs[0],op.inputs[1],grad)

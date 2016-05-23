@@ -23,45 +23,41 @@ class LookaheadGradOp<T, 0> : public OpKernel {
     const Tensor& backprop_output_tensor = context->input(2);
     auto backprop_output = backprop_output_tensor.tensor<T, 3>();
 
-    // Check that preserve_index is in range
-
-    // Create an output tensor
+    // Create input grad output tensor
     Tensor* output_tensor = NULL;
     OP_REQUIRES_OK(context, context->allocate_output(0, input_tensor.shape(),
                                                      &output_tensor));
     auto output = output_tensor->template tensor<T, 3>();
 
     for (int batch = 0; batch < input_tensor.dim_size(0); batch++) {
-      for (int input_x = 0; input_x < input_tensor.dim_size(1); input_x++) {
-        for (int input_y = 0; input_y < input_tensor.dim_size(2); input_y++) {
-          output(batch, input_x, input_y) = 0;
+      for (int t = 0; t < input_tensor.dim_size(1); t++) {
+        for (int f = 0; f < input_tensor.dim_size(2); f++) {
+          output(batch, t, f) = 0;
           for (int input_begin = 0; input_begin < filter_tensor.dim_size(0); input_begin++) {
-            int index = input_begin + input_y - filter_tensor.dim_size(0) + 1;
+            int index = input_begin + t - filter_tensor.dim_size(0) + 1;
             int filter_idx = filter_tensor.dim_size(0) - 1 - input_begin;
             if (index >= 0 && filter_idx >= 0) {
-              output(batch, input_x, input_y) += backprop_output(batch, input_x, index) / filter(filter_idx, input_x);
+              output(batch, t, f) += backprop_output(batch, index, f) * filter(filter_idx, f);
             }
           }
         }
       }
     }
-    // Create an output tensor
+    // Create filter grad output tensor
     OP_REQUIRES_OK(context, context->allocate_output(1, filter_tensor.shape(),
                                                      &output_tensor));
     auto output2 = output_tensor->template matrix<T>();
 
-    for (int input_y = 0; input_y < filter_tensor.dim_size(1); input_y++) {
-      for (int input_x = 0; input_x < filter_tensor.dim_size(0); input_x++) {
-        output2(input_x, input_y) = 0;
+    for (int f = 0; f < filter_tensor.dim_size(1); f++) {
+      for (int t = 0; t < filter_tensor.dim_size(0); t++) {
+        output2(t, f) = 0;
       }
     }
     for (int batch = 0; batch < input_tensor.dim_size(0); batch++) {
-      for (int input_y = 0; input_y < filter_tensor.dim_size(1); input_y++) {
-        for (int input_x = 0; input_x < filter_tensor.dim_size(0); input_x++) {
-          for (int input_begin = 0; input_begin < input_tensor.dim_size(2) - input_x; input_begin++) {
-            if(input(batch, input_y, input_x + input_begin) != 0) {
-              output2(input_x, input_y) += backprop_output(batch, input_y, input_begin) / input(batch, input_y, input_x + input_begin);
-            }
+      for (int f = 0; f < filter_tensor.dim_size(1); f++) {
+        for (int tau = 0; tau < filter_tensor.dim_size(0); tau++) {
+          for (int t = 0; t < input_tensor.dim_size(1) - tau; t++) {
+            output2(tau, f) += backprop_output(batch, t, f) * input(batch, t + tau, f);
           }
         }
       }
