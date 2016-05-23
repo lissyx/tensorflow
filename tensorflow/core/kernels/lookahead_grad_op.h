@@ -8,19 +8,11 @@
 using namespace tensorflow;
 
 template<typename T, int K>
-class LookaheadGradInputOp : public OpKernel {
+class LookaheadGradOp : public OpKernel {
  public:
-  explicit LookaheadGradInputOp(OpKernelConstruction* context) : OpKernel(context) {
+  explicit LookaheadGradOp(OpKernelConstruction* context) : OpKernel(context) {
     const DataType dt = DataTypeToEnum<T>::v();
-    OP_REQUIRES_OK(context, context->MatchSignature({dt, dt, dt}, {dt}));
+    OP_REQUIRES_OK(context, context->MatchSignature({dt, dt, dt}, {dt, dt}));
   }
 };
 
-template<typename T, int K>
-class LookaheadGradFilterOp : public OpKernel {
- public:
-  explicit LookaheadGradFilterOp(OpKernelConstruction* context) : OpKernel(context) {
-    const DataType dt = DataTypeToEnum<T>::v();
-    OP_REQUIRES_OK(context, context->MatchSignature({dt, dt, dt}, {dt}));
-  }
-};

@@ -43,17 +43,11 @@ def lookaheadcpu(x1, x2):
 def lookaheadgpu(x1, x2):
   return gen_lookahead_ops._lookaheadgpu(x1, x2)
 
-def lookaheadgradinputcpu(x1, x2, x3):
-  return gen_lookahead_ops._lookaheadgradinputcpu(x1, x2, x3)
+def lookaheadgradcpu(x1, x2, x3):
+  return gen_lookahead_ops._lookaheadgradcpu(x1, x2, x3)
 
-def lookaheadgradinputgpu(x1, x2, x3):
-  return gen_lookahead_ops._lookaheadgradinputgpu(x1, x2, x3)
-
-def lookaheadgradfiltercpu(x1, x2, x3):
-  return gen_lookahead_ops._lookaheadgradfiltercpu(x1, x2, x3)
-
-def lookaheadgradfiltergpu(x1, x2, x3):
-  return gen_lookahead_ops._lookaheadgradfiltergpu(x1, x2, x3)
+def lookaheadgradgpu(x1, x2, x3):
+  return gen_lookahead_ops._lookaheadgradgpu(x1, x2, x3)
 
 @ops.RegisterShape("Lookaheadcpu")
 def _Lookaheadcpu(op):
@@ -71,12 +65,8 @@ def _Lookaheadcpu_grad(op, grad):
   Returns:
     the gradients w.r.t. the input and the filter
   """
-  print(op.inputs[0].get_shape())
-  print(op.inputs[1].get_shape())
-  return [tf.contrib.lookahead.lookaheadgradinputcpu(
-              op.inputs[0],op.inputs[1],grad),
-          tf.contrib.lookahead.lookaheadgradfiltercpu(
-              op.inputs[0],op.inputs[1],grad)]
+  return tf.contrib.lookahead.lookaheadgradcpu(
+              op.inputs[0],op.inputs[1],grad)
 
 @ops.RegisterGradient("Lookaheadgpu")
 def _Lookaheadgpu_grad(op, grad):
@@ -89,88 +79,22 @@ def _Lookaheadgpu_grad(op, grad):
   Returns:
     the gradients w.r.t. the input and the filter
   """
-  return [tf.contrib.lookahead.lookaheadgradinputgpu(
-              op.inputs[0],op.inputs[1],grad),
-          tf.contrib.lookahead.lookaheadgradfiltergpu(
-              op.inputs[0],op.inputs[1],grad)]
+  return tf.contrib.lookahead.lookaheadgradgpu(
+              op.inputs[0],op.inputs[1],grad)
 
 @ops.RegisterShape("Lookaheadgpu")
 def _Lookaheadgpu(op):
   inputs_shape = op.inputs[0].get_shape().with_rank(3)
   return [inputs_shape]
 
-@ops.RegisterShape("Lookaheadgradinputcpu")
-def _Lookaheadgradinputcpu(op):
-  inputs_shape = op.inputs[0].get_shape().with_rank(3)
-  return [inputs_shape]
+@ops.RegisterShape("Lookaheadgradcpu")
+def _Lookaheadgradcpu(op):
+  inputs_shape1 = op.inputs[0].get_shape().with_rank(3)
+  inputs_shape2 = op.inputs[1].get_shape().with_rank(2)
+  return [inputs_shape1, inputs_shape2]
 
-@ops.RegisterShape("Lookaheadgradinputgpu")
+@ops.RegisterShape("Lookaheadgradgpu")
 def _Lookaheadgradinputgpu(op):
-  inputs_shape = op.inputs[0].get_shape().with_rank(3)
-  return [inputs_shape]
-
-@ops.RegisterShape("Lookaheadgradfiltercpu")
-def _Lookaheadgradfiltercpu(op):
-  inputs_shape = op.inputs[1].get_shape().with_rank(2)
-  return [inputs_shape]
-
-@ops.RegisterShape("Lookaheadgradfiltergpu")
-def _Lookaheadgradfiltergpu(op):
-  inputs_shape = op.inputs[1].get_shape().with_rank(2)
-  return [inputs_shape]
-
-@ops.RegisterGradient("Lookaheadgradinputcpu")
-def _Lookahead_grad_input_cpu(op, grad):
-  """The derivatives for deconvolution.
-
-  Args:
-    op: the Deconvolution op.
-    grad: the tensor representing the gradient w.r.t. the output
-
-  Returns:
-    the gradients w.r.t. the input and the filter
-  """
-  return [tf.contrib.lookahead.lookaheadgradinputcpu(
-              op.inputs[0],op.inputs[1],op.inputs[2])]
-
-@ops.RegisterGradient("Lookaheadgradinputgpu")
-def _Lookahead_grad_input_gpu(op, grad):
-  """The derivatives for deconvolution.
-
-  Args:
-    op: the Deconvolution op.
-    grad: the tensor representing the gradient w.r.t. the output
-
-  Returns:
-    the gradients w.r.t. the input and the filter
-  """
-  return [tf.contrib.lookahead.lookaheadgradinputgpu(
-              op.inputs[0],op.inputs[1],op.inputs[2])]
-
-@ops.RegisterGradient("Lookaheadgradfiltercpu")
-def _Lookahead_grad_filter_cpu(op, grad):
-  """The derivatives for deconvolution.
-
-  Args:
-    op: the Deconvolution op.
-    grad: the tensor representing the gradient w.r.t. the output
-
-  Returns:
-    the gradients w.r.t. the input and the filter
-  """
-  return [tf.contrib.lookahead.lookaheadgradfiltercpu(
-              op.inputs[0],op.inputs[1],op.inputs[2])]
-
-@ops.RegisterGradient("Lookaheadgradfiltergpu")
-def _Lookahead_grad_filter_gpu(op, grad):
-  """The derivatives for deconvolution.
-
-  Args:
-    op: the Deconvolution op.
-    grad: the tensor representing the gradient w.r.t. the output
-
-  Returns:
-    the gradients w.r.t. the input and the filter
-  """
-  return [tf.contrib.lookahead.lookaheadgradfiltergpu(
-              op.inputs[0],op.inputs[1],op.inputs[2])]
+  inputs_shape1 = op.inputs[0].get_shape().with_rank(3)
+  inputs_shape2 = op.inputs[1].get_shape().with_rank(2)
+  return [inputs_shape1, inputs_shape2]

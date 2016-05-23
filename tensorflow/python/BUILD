@@ -548,10 +548,8 @@ tf_gen_op_wrapper_py(
     hidden = [
         "Lookaheadcpu",
         "Lookaheadgpu",
-        "Lookaheadgradinputcpu",
-        "Lookaheadgradinputgpu",
-        "Lookaheadgradfiltercpu",
-        "Lookaheadgradfiltergpu",
+        "Lookaheadgradcpu",
+        "Lookaheadgradgpu",
     ],
     require_shape_functions = True,
 )

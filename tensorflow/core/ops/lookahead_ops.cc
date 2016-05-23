@@ -12,28 +12,18 @@ REGISTER_OP("Lookaheadgpu")
     .Input("filter: float")
     .Output("output: float");
 
-REGISTER_OP("Lookaheadgradinputcpu")
+REGISTER_OP("Lookaheadgradcpu")
     .Input("input: float")
     .Input("filter: float")
     .Input("backprop_output: float")
-    .Output("output: float");
+    .Output("output1: float")
+    .Output("output2: float");
 
-REGISTER_OP("Lookaheadgradfiltercpu")
+REGISTER_OP("Lookaheadgradgpu")
     .Input("input: float")
     .Input("filter: float")
     .Input("backprop_output: float")
-    .Output("output: float");
-
-REGISTER_OP("Lookaheadgradinputgpu")
-    .Input("input: float")
-    .Input("filter: float")
-    .Input("backprop_output: float")
-    .Output("output: float");
-
-REGISTER_OP("Lookaheadgradfiltergpu")
-    .Input("input: float")
-    .Input("filter: float")
-    .Input("backprop_output: float")
-    .Output("output: float");
+    .Output("output1: float")
+    .Output("output2: float");
 
 }

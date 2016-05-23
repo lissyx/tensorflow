@@ -37,11 +37,11 @@ __global__ void kernel_set_zero(int dim_x, int dim_y, T* output) {
 }
 
 template<typename T>
-class LookaheadGradInputOp<T, 1> : public OpKernel {
+class LookaheadGradOp<T, 1> : public OpKernel {
  public:
-  explicit LookaheadGradInputOp(OpKernelConstruction* context) : OpKernel(context) {
+  explicit LookaheadGradOp(OpKernelConstruction* context) : OpKernel(context) {
     const DataType dt = DataTypeToEnum<T>::v();
-    OP_REQUIRES_OK(context, context->MatchSignature({dt, dt, dt}, {dt}));
+    OP_REQUIRES_OK(context, context->MatchSignature({dt, dt, dt}, {dt, dt}));
   }
 
   void Compute(OpKernelContext* context) override {
@@ -78,56 +78,27 @@ class LookaheadGradInputOp<T, 1> : public OpKernel {
       cudaStreamSynchronize(stream[i]);
       cudaStreamDestroy(stream[i]);
     }
-  }
-
- private:
-  int preserve_index_;
-};
-
-template<typename T>
-class LookaheadGradFilterOp<T, 1> : public OpKernel {
- public:
-  explicit LookaheadGradFilterOp(OpKernelConstruction* context) : OpKernel(context) {
-    const DataType dt = DataTypeToEnum<T>::v();
-    OP_REQUIRES_OK(context, context->MatchSignature({dt, dt, dt}, {dt}));
-  }
-
-  void Compute(OpKernelContext* context) override {
-    // Grab the input tensor
-    const Tensor& input_tensor = context->input(0);
-    auto input = input_tensor.tensor<T, 3>();
-
-    const Tensor& filter_tensor = context->input(1);
-    auto filter = filter_tensor.matrix<T>();
-
-    const Tensor& backprop_output_tensor = context->input(2);
-    auto backprop_output = backprop_output_tensor.tensor<T, 3>();
-
-    // Check that preserve_index is in range
-
     // Create an output tensor
-    Tensor* output_tensor = NULL;
-    OP_REQUIRES_OK(context, context->allocate_output(0, filter_tensor.shape(),
+    OP_REQUIRES_OK(context, context->allocate_output(1, filter_tensor.shape(),
                                                      &output_tensor));
-    auto output = output_tensor->template matrix<T>();
+    auto output2 = output_tensor->template matrix<T>();
 
-    int batch_size = input_tensor.dim_size(0);
-    int dim_x = filter_tensor.dim_size(0);
-    int dim_y = filter_tensor.dim_size(1);
+    batch_size = input_tensor.dim_size(0);
+    dim_x = filter_tensor.dim_size(0);
+    dim_y = filter_tensor.dim_size(1);
     int input_size = input_tensor.dim_size(2);
-    cudaStream_t stream;
-    cudaStreamCreate(&stream);
-    cudaMemset(&output(0, 0), 0, dim_x * dim_y * sizeof(T));
+    cudaStream_t streamx;
+    cudaStreamCreate(&streamx);
+    cudaMemset(&output2(0, 0), 0, dim_x * dim_y * sizeof(T));
     for (int i = 0; i < batch_size; i++) {
-      kernel_grad_filter<T><<<dim_x, dim_y, 0, stream>>>(dim_x, dim_y, input_size, &input(i, 0, 0), &backprop_output(i, 0, 0), &output(0, 0));
-      cudaStreamSynchronize(stream);
+      kernel_grad_filter<T><<<dim_x, dim_y, 0, streamx>>>(dim_x, dim_y, input_size, &input(i, 0, 0), &backprop_output(i, 0, 0), &output2(0, 0));
+      cudaStreamSynchronize(streamx);
     }
-    cudaStreamDestroy(stream);
+    cudaStreamDestroy(streamx);
   }
 
  private:
   int preserve_index_;
 };
 
-REGISTER_KERNEL_BUILDER(Name("Lookaheadgradinputgpu").Device(DEVICE_GPU), LookaheadGradInputOp<float, 1>);
-REGISTER_KERNEL_BUILDER(Name("Lookaheadgradfiltergpu").Device(DEVICE_GPU), LookaheadGradFilterOp<float, 1>);
+REGISTER_KERNEL_BUILDER(Name("Lookaheadgradgpu").Device(DEVICE_GPU), LookaheadGradOp<float, 1>);
