@@ -7,8 +7,8 @@ __global__ void kernel(int dim_t, int dim_f, int dim_tau, const T* input, const 
   int t = blockIdx.x;
   int f = threadIdx.x;
   output[t * dim_f + f] = 0;
-  for(int tau = 0; tau < dim_tau; tau++) {
-    if(t + tau < dim_t) output[t* dim_f + f] += input[(t + tau) * dim_f + f] * filter[tau * dim_f + f];
+  for(int tau = 0; tau < dim_tau, t + tau < dim_t; tau++) {
+    output[t* dim_f + f] += input[(t + tau) * dim_f + f] * filter[tau * dim_f + f];
   }
 }
 
@@ -26,6 +26,11 @@ class LookaheadOp<T, 1> : public OpKernel {
     auto input = input_tensor.tensor<T, 3>();
     const Tensor& filter_tensor = context->input(1);
     auto filter = filter_tensor.matrix<T>();
+
+    // Check that dimension is equal
+    OP_REQUIRES(
+        context, input_tensor.dim_size(2) == filter_tensor.dim_size(1),
+        errors::InvalidArgument("f is not equal in filter and input"));
 
     // Create output tensor
     Tensor* output_tensor = NULL;
@@ -48,9 +53,6 @@ class LookaheadOp<T, 1> : public OpKernel {
       cudaStreamDestroy(stream[i]);
     }
   }
-
- private:
-  int preserve_index_;
 };
 
 REGISTER_KERNEL_BUILDER(Name("Lookaheadgpu").Device(DEVICE_GPU), LookaheadOp<float, 1>);

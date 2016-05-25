@@ -20,6 +20,11 @@ class LookaheadOp<T, 0> : public OpKernel {
     const Tensor& filter_tensor = context->input(1);
     auto filter = filter_tensor.matrix<T>();
 
+    // Check that dimension is equal
+    OP_REQUIRES(
+        context, input_tensor.dim_size(2) == filter_tensor.dim_size(1),
+        errors::InvalidArgument("f is not equal in filter and input"));
+
     // Create output tensor
     Tensor* output_tensor = NULL;
     OP_REQUIRES_OK(context, context->allocate_output(0, input_tensor.shape(),
@@ -30,16 +35,13 @@ class LookaheadOp<T, 0> : public OpKernel {
       for (int t = 0; t < input_tensor.dim_size(1); t++) {
         for (int f = 0; f < input_tensor.dim_size(2); f++) {
           output(batch, t, f) = 0;
-          for(int tau = 0; tau < filter_tensor.dim_size(0); tau++) {
-            if(t + tau < input_tensor.dim_size(1)) output(batch, t, f) += input(batch, t + tau, f) * filter(tau, f);
+          for(int tau = 0; tau < filter_tensor.dim_size(0), t + tau < input_tensor.dim_size(1); tau++) {
+            output(batch, t, f) += input(batch, t + tau, f) * filter(tau, f);
           }
         }
       }
     }
   }
-
- private:
-  int preserve_index_;
 };
 
 REGISTER_KERNEL_BUILDER(Name("Lookaheadcpu").Device(DEVICE_CPU), LookaheadOp<float, 0>);

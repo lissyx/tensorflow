@@ -20,8 +20,18 @@ class LookaheadGradOp<T, 0> : public OpKernel {
     const Tensor& filter_tensor = context->input(1);
     auto filter = filter_tensor.matrix<T>();
 
-    const Tensor& backprop_output_tensor = context->input(2);
-    auto backprop_output = backprop_output_tensor.tensor<T, 3>();
+    const Tensor& output_grad_tensor = context->input(2);
+    auto output_grad = output_grad_tensor.tensor<T, 3>();
+
+     // Check that dimension is equal
+    OP_REQUIRES(
+        context, input_tensor.dim_size(2) == filter_tensor.dim_size(1),
+        errors::InvalidArgument("f is not equal in filter and input"));
+    OP_REQUIRES(
+        context, (input_tensor.dim_size(0) == output_grad.dim_size(0)) &&
+                 (input_tensor.dim_size(1) == output_grad.dim_size(1)) &&
+                 (input_tensor.dim_size(2) == output_grad.dim_size(2)),
+        errors::InvalidArgument("input's dimensions and output_grad's dimensions are not equal"));
 
     // Create input grad output tensor
     Tensor* output_tensor = NULL;
@@ -37,7 +47,7 @@ class LookaheadGradOp<T, 0> : public OpKernel {
             int index = input_begin + t - filter_tensor.dim_size(0) + 1;
             int filter_idx = filter_tensor.dim_size(0) - 1 - input_begin;
             if (index >= 0 && filter_idx >= 0) {
-              output(batch, t, f) += backprop_output(batch, index, f) * filter(filter_idx, f);
+              output(batch, t, f) += output_grad(batch, index, f) * filter(filter_idx, f);
             }
           }
         }
@@ -48,8 +58,8 @@ class LookaheadGradOp<T, 0> : public OpKernel {
                                                      &output_tensor));
     auto output2 = output_tensor->template matrix<T>();
 
-    for (int f = 0; f < filter_tensor.dim_size(1); f++) {
-      for (int t = 0; t < filter_tensor.dim_size(0); t++) {
+    for (int t = 0; t < filter_tensor.dim_size(0); t++) {
+      for (int f = 0; f < filter_tensor.dim_size(1); f++) {
         output2(t, f) = 0;
       }
     }
@@ -57,15 +67,12 @@ class LookaheadGradOp<T, 0> : public OpKernel {
       for (int f = 0; f < filter_tensor.dim_size(1); f++) {
         for (int tau = 0; tau < filter_tensor.dim_size(0); tau++) {
           for (int t = 0; t < input_tensor.dim_size(1) - tau; t++) {
-            output2(tau, f) += backprop_output(batch, t, f) * input(batch, t + tau, f);
+            output2(tau, f) += output_grad(batch, t, f) * input(batch, t + tau, f);
           }
         }
       }
     }
   }
-
- private:
-  int preserve_index_;
 };
 
 REGISTER_KERNEL_BUILDER(Name("Lookaheadgradcpu").Device(DEVICE_CPU), LookaheadGradOp<float, 0>);

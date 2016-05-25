@@ -43,8 +43,18 @@ class LookaheadGradOp<T, 1> : public OpKernel {
     const Tensor& filter_tensor = context->input(1);
     auto filter = filter_tensor.matrix<T>();
 
-    const Tensor& backprop_output_tensor = context->input(2);
-    auto backprop_output = backprop_output_tensor.tensor<T, 3>();
+    const Tensor& output_grad_tensor = context->input(2);
+    auto output_grad = output_grad_tensor.tensor<T, 3>();
+
+    // Check that dimension is equal
+    OP_REQUIRES(
+        context, input_tensor.dim_size(2) == filter_tensor.dim_size(1),
+        errors::InvalidArgument("f is not equal in filter and input"));
+    OP_REQUIRES(
+        context, (input_tensor.dim_size(0) == output_grad.dim_size(0)) &&
+                 (input_tensor.dim_size(1) == output_grad.dim_size(1)) &&
+                 (input_tensor.dim_size(2) == output_grad.dim_size(2)),
+        errors::InvalidArgument("input's dimensions and output_grad's dimensions are not equal"));
 
     // Create input grad output tensor
     Tensor* output_tensor = NULL;
@@ -61,7 +71,7 @@ class LookaheadGradOp<T, 1> : public OpKernel {
       cudaStreamCreate(&stream[i]);
     }
     for (int i = 0; i < dim_batch; i++) {
-      kernel_grad_input<T><<<dim_t, dim_f, 0, stream[i]>>>(dim_t, dim_f, dim_tau, &filter(0, 0), &backprop_output(i, 0, 0), &output(i, 0, 0));
+      kernel_grad_input<T><<<dim_t, dim_f, 0, stream[i]>>>(dim_t, dim_f, dim_tau, &filter(0, 0), &output_grad(i, 0, 0), &output(i, 0, 0));
     }
     for (int i = 0; i < dim_batch; i++) {
       cudaStreamSynchronize(stream[i]);
@@ -76,14 +86,11 @@ class LookaheadGradOp<T, 1> : public OpKernel {
     cudaStreamCreate(&streamx);
     cudaMemset(&output2(0, 0), 0, dim_tau * dim_f * sizeof(T));
     for (int i = 0; i < dim_batch; i++) {
-      kernel_grad_filter<T><<<dim_tau, dim_f, 0, streamx>>>(dim_tau, dim_f, dim_t, &input(i, 0, 0), &backprop_output(i, 0, 0), &output2(0, 0));
+      kernel_grad_filter<T><<<dim_tau, dim_f, 0, streamx>>>(dim_tau, dim_f, dim_t, &input(i, 0, 0), &output_grad(i, 0, 0), &output2(0, 0));
       cudaStreamSynchronize(streamx);
     }
     cudaStreamDestroy(streamx);
   }
-
- private:
-  int preserve_index_;
 };
 
 REGISTER_KERNEL_BUILDER(Name("Lookaheadgradgpu").Device(DEVICE_GPU), LookaheadGradOp<float, 1>);
