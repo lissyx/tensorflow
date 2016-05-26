@@ -28,9 +28,9 @@ class LookaheadGradOp<T, 0> : public OpKernel {
         context, input_tensor.dim_size(2) == filter_tensor.dim_size(1),
         errors::InvalidArgument("f is not equal in filter and input"));
     OP_REQUIRES(
-        context, (input_tensor.dim_size(0) == output_grad.dim_size(0)) &&
-                 (input_tensor.dim_size(1) == output_grad.dim_size(1)) &&
-                 (input_tensor.dim_size(2) == output_grad.dim_size(2)),
+        context, (input_tensor.dim_size(0) == output_grad_tensor.dim_size(0)) &&
+                 (input_tensor.dim_size(1) == output_grad_tensor.dim_size(1)) &&
+                 (input_tensor.dim_size(2) == output_grad_tensor.dim_size(2)),
         errors::InvalidArgument("input's dimensions and output_grad's dimensions are not equal"));
 
     // Create input grad output tensor

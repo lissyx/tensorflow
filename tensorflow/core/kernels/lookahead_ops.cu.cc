@@ -7,7 +7,7 @@ __global__ void kernel(int dim_t, int dim_f, int dim_tau, const T* input, const 
   int t = blockIdx.x;
   int f = threadIdx.x;
   output[t * dim_f + f] = 0;
-  for(int tau = 0; tau < dim_tau, t + tau < dim_t; tau++) {
+  for(int tau = 0; tau < dim_tau && t + tau < dim_t; tau++) {
     output[t* dim_f + f] += input[(t + tau) * dim_f + f] * filter[tau * dim_f + f];
   }
 }
