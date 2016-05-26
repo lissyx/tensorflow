@@ -33,10 +33,10 @@ class LookaheadOp<T, 0> : public OpKernel {
 
     for (int timestep = 0; timestep < input_tensor.dim_size(0); timestep++) {
       for (int batch = 0; batch < input_tensor.dim_size(1); batch++) {
-        for (int frequence = 0; frequence < input_tensor.dim_size(2); frequence++) {
-          output(timestep, batch, frequence) = 0;
+        for (int feature = 0; feature < input_tensor.dim_size(2); feature++) {
+          output(timestep, batch, feature) = 0;
           for(int tau = 0; tau < filter_tensor.dim_size(0) && timestep + tau < input_tensor.dim_size(0); tau++) {
-            output(timestep, batch, frequence) += input(timestep + tau, batch, frequence) * filter(tau, frequence);
+            output(timestep, batch, feature) += input(timestep + tau, batch, feature) * filter(tau, feature);
           }
         }
       }

@@ -41,13 +41,13 @@ class LookaheadGradOp<T, 0> : public OpKernel {
 
     for (int timestep = 0; timestep < input_tensor.dim_size(0); timestep++) {
       for (int batch = 0; batch < input_tensor.dim_size(1); batch++) {
-        for (int frequence = 0; frequence < input_tensor.dim_size(2); frequence++) {
-          output(timestep, batch, frequence) = 0;
+        for (int feature = 0; feature < input_tensor.dim_size(2); feature++) {
+          output(timestep, batch, feature) = 0;
           for (int input_begin = 0; input_begin < filter_tensor.dim_size(0); input_begin++) {
             int index = input_begin + timestep - filter_tensor.dim_size(0) + 1;
             int filter_idx = filter_tensor.dim_size(0) - 1 - input_begin;
             if (index >= 0 && filter_idx >= 0) {
-              output(timestep, batch, frequence) += output_grad(index, batch, frequence) * filter(filter_idx, frequence);
+              output(timestep, batch, feature) += output_grad(index, batch, feature) * filter(filter_idx, feature);
             }
           }
         }
@@ -59,15 +59,15 @@ class LookaheadGradOp<T, 0> : public OpKernel {
     auto output2 = output_tensor->template matrix<T>();
 
     for (int tau = 0; tau < filter_tensor.dim_size(0); tau++) {
-      for (int frequence = 0; frequence < filter_tensor.dim_size(1); frequence++) {
-        output2(tau, frequence) = 0;
+      for (int feature = 0; feature < filter_tensor.dim_size(1); feature++) {
+        output2(tau, feature) = 0;
       }
     }
     for (int batch = 0; batch < input_tensor.dim_size(1); batch++) {
-      for (int frequence = 0; frequence < filter_tensor.dim_size(1); frequence++) {
+      for (int feature = 0; feature < filter_tensor.dim_size(1); feature++) {
         for (int tau = 0; tau < filter_tensor.dim_size(0); tau++) {
           for (int timestep = 0; timestep < input_tensor.dim_size(0) - tau; timestep++) {
-            output2(tau, frequence) += output_grad(timestep, batch, frequence) * input(timestep + tau, batch, frequence);
+            output2(tau, feature) += output_grad(timestep, batch, feature) * input(timestep + tau, batch, feature);
           }
         }
       }

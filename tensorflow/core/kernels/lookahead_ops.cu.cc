@@ -6,13 +6,13 @@ template<typename T>
 __global__ void kernel(int dim_tau, const T* input, const T* filter, T* output) {
   int dim_timestep = gridDim.x;
   int dim_batch = gridDim.y;
-  int dim_frequence = blockDim.x;
+  int dim_feature = blockDim.x;
   int timestep = blockIdx.x;
   int batch = blockIdx.y;
-  int frequence = threadIdx.x;
-  output[(timestep * dim_batch + batch) * dim_frequence + frequence] = 0;
+  int feature = threadIdx.x;
+  output[(timestep * dim_batch + batch) * dim_feature + feature] = 0;
   for(int tau = 0; tau < dim_tau && timestep + tau < dim_timestep; tau++) {
-    output[(timestep * dim_batch + batch) * dim_frequence + frequence] += input[((timestep + tau) * dim_batch + batch) * dim_frequence + frequence] * filter[tau * dim_frequence + frequence];
+    output[(timestep * dim_batch + batch) * dim_feature + feature] += input[((timestep + tau) * dim_batch + batch) * dim_feature + feature] * filter[tau * dim_feature + feature];
   }
 }
 
@@ -44,11 +44,11 @@ class LookaheadOp<T, 1> : public OpKernel {
     int batch_size = input_tensor.dim_size(1);
     cudaStream_t stream;
     int dim_timestep = input_tensor.dim_size(0);
-    int dim_frequence = input_tensor.dim_size(2);
+    int dim_feature = input_tensor.dim_size(2);
     int dim_tau = filter_tensor.dim_size(0);
     cudaStreamCreate(&stream);
     dim3 grid(dim_timestep, batch_size);
-    kernel<T><<<grid, dim_frequence, 0, stream>>>(dim_tau, &input(0, 0, 0), &filter(0, 0), &output(0, 0, 0));
+    kernel<T><<<grid, dim_feature, 0, stream>>>(dim_tau, &input(0, 0, 0), &filter(0, 0), &output(0, 0, 0));
     cudaStreamSynchronize(stream);
     cudaStreamDestroy(stream);
   }
