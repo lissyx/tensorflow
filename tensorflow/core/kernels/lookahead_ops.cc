@@ -31,12 +31,12 @@ class LookaheadOp<T, 0> : public OpKernel {
                                                      &output_tensor));
     auto output = output_tensor->template tensor<T, 3>();
 
-    for (int batch = 0; batch < input_tensor.dim_size(0); batch++) {
-      for (int t = 0; t < input_tensor.dim_size(1); t++) {
-        for (int f = 0; f < input_tensor.dim_size(2); f++) {
-          output(batch, t, f) = 0;
-          for(int tau = 0; tau < filter_tensor.dim_size(0) && t + tau < input_tensor.dim_size(1); tau++) {
-            output(batch, t, f) += input(batch, t + tau, f) * filter(tau, f);
+    for (int timestep = 0; timestep < input_tensor.dim_size(0); timestep++) {
+      for (int batch = 0; batch < input_tensor.dim_size(1); batch++) {
+        for (int frequence = 0; frequence < input_tensor.dim_size(2); frequence++) {
+          output(timestep, batch, frequence) = 0;
+          for(int tau = 0; tau < filter_tensor.dim_size(0) && timestep + tau < input_tensor.dim_size(0); tau++) {
+            output(timestep, batch, frequence) += input(timestep + tau, batch, frequence) * filter(tau, frequence);
           }
         }
       }

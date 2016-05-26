@@ -3,12 +3,16 @@
 using namespace tensorflow;
 
 template<typename T>
-__global__ void kernel(int dim_t, int dim_f, int dim_tau, const T* input, const T* filter, T* output) {
-  int t = blockIdx.x;
-  int f = threadIdx.x;
-  output[t * dim_f + f] = 0;
-  for(int tau = 0; tau < dim_tau && t + tau < dim_t; tau++) {
-    output[t* dim_f + f] += input[(t + tau) * dim_f + f] * filter[tau * dim_f + f];
+__global__ void kernel(int dim_tau, const T* input, const T* filter, T* output) {
+  int dim_timestep = gridDim.x;
+  int dim_batch = gridDim.y;
+  int dim_frequence = blockDim.x;
+  int timestep = blockIdx.x;
+  int batch = blockIdx.y;
+  int frequence = threadIdx.x;
+  output[(timestep * dim_batch + batch) * dim_frequence + frequence] = 0;
+  for(int tau = 0; tau < dim_tau && timestep + tau < dim_timestep; tau++) {
+    output[(timestep * dim_batch + batch) * dim_frequence + frequence] += input[((timestep + tau) * dim_batch + batch) * dim_frequence + frequence] * filter[tau * dim_frequence + frequence];
   }
 }
 
@@ -37,21 +41,16 @@ class LookaheadOp<T, 1> : public OpKernel {
     OP_REQUIRES_OK(context, context->allocate_output(0, input_tensor.shape(),
                                                      &output_tensor));
     auto output = output_tensor->template tensor<T, 3>();
-    int batch_size = input_tensor.dim_size(0);
-    cudaStream_t stream[batch_size];
-    int dim_t = input_tensor.dim_size(1);
-    int dim_f = input_tensor.dim_size(2);
+    int batch_size = input_tensor.dim_size(1);
+    cudaStream_t stream;
+    int dim_timestep = input_tensor.dim_size(0);
+    int dim_frequence = input_tensor.dim_size(2);
     int dim_tau = filter_tensor.dim_size(0);
-    for(int i = 0; i < batch_size; i++) {
-      cudaStreamCreate(&stream[i]);
-    }
-    for(int i = 0; i < batch_size; i++) {
-      kernel<T><<<dim_t, dim_f, 0, stream[i]>>>(dim_t, dim_f, dim_tau, &input(i, 0, 0), &filter(0, 0), &output(i, 0, 0));
-    }
-    for(int i = 0; i < batch_size; i++) {
-      cudaStreamSynchronize(stream[i]);
-      cudaStreamDestroy(stream[i]);
-    }
+    cudaStreamCreate(&stream);
+    dim3 grid(dim_timestep, batch_size);
+    kernel<T><<<grid, dim_frequence, 0, stream>>>(dim_tau, &input(0, 0, 0), &filter(0, 0), &output(0, 0, 0));
+    cudaStreamSynchronize(stream);
+    cudaStreamDestroy(stream);
   }
 };
 

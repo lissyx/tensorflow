@@ -39,15 +39,15 @@ class LookaheadGradOp<T, 0> : public OpKernel {
                                                      &output_tensor));
     auto output = output_tensor->template tensor<T, 3>();
 
-    for (int batch = 0; batch < input_tensor.dim_size(0); batch++) {
-      for (int t = 0; t < input_tensor.dim_size(1); t++) {
-        for (int f = 0; f < input_tensor.dim_size(2); f++) {
-          output(batch, t, f) = 0;
+    for (int timestep = 0; timestep < input_tensor.dim_size(0); timestep++) {
+      for (int batch = 0; batch < input_tensor.dim_size(1); batch++) {
+        for (int frequence = 0; frequence < input_tensor.dim_size(2); frequence++) {
+          output(timestep, batch, frequence) = 0;
           for (int input_begin = 0; input_begin < filter_tensor.dim_size(0); input_begin++) {
-            int index = input_begin + t - filter_tensor.dim_size(0) + 1;
+            int index = input_begin + timestep - filter_tensor.dim_size(0) + 1;
             int filter_idx = filter_tensor.dim_size(0) - 1 - input_begin;
             if (index >= 0 && filter_idx >= 0) {
-              output(batch, t, f) += output_grad(batch, index, f) * filter(filter_idx, f);
+              output(timestep, batch, frequence) += output_grad(index, batch, frequence) * filter(filter_idx, frequence);
             }
           }
         }
@@ -58,16 +58,16 @@ class LookaheadGradOp<T, 0> : public OpKernel {
                                                      &output_tensor));
     auto output2 = output_tensor->template matrix<T>();
 
-    for (int t = 0; t < filter_tensor.dim_size(0); t++) {
-      for (int f = 0; f < filter_tensor.dim_size(1); f++) {
-        output2(t, f) = 0;
+    for (int tau = 0; tau < filter_tensor.dim_size(0); tau++) {
+      for (int frequence = 0; frequence < filter_tensor.dim_size(1); frequence++) {
+        output2(tau, frequence) = 0;
       }
     }
-    for (int batch = 0; batch < input_tensor.dim_size(0); batch++) {
-      for (int f = 0; f < filter_tensor.dim_size(1); f++) {
+    for (int batch = 0; batch < input_tensor.dim_size(1); batch++) {
+      for (int frequence = 0; frequence < filter_tensor.dim_size(1); frequence++) {
         for (int tau = 0; tau < filter_tensor.dim_size(0); tau++) {
-          for (int t = 0; t < input_tensor.dim_size(1) - tau; t++) {
-            output2(tau, f) += output_grad(batch, t, f) * input(batch, t + tau, f);
+          for (int timestep = 0; timestep < input_tensor.dim_size(0) - tau; timestep++) {
+            output2(tau, frequence) += output_grad(timestep, batch, frequence) * input(timestep + tau, batch, frequence);
           }
         }
       }

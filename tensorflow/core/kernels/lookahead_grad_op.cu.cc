@@ -5,25 +5,33 @@
 using namespace tensorflow;
 
 template<typename T>
-__global__ void kernel_grad_input(int dim_t, int dim_f, int dim_tau, const T* filter, const T* back_prop, T* output) {
-  int f = threadIdx.x;
-  int t = blockIdx.x;
-  output[t * dim_f + f] = 0;
+__global__ void kernel_grad_input(int dim_tau, const T* filter, const T* output_grad, T* output) {
+  int dim_timestep = gridDim.x;
+  int dim_batch = gridDim.y;
+  int dim_frequence = blockDim.x;
+  int timestep = blockIdx.x;
+  int batch = blockIdx.y;
+  int frequence = threadIdx.x;
+  output[(timestep * dim_batch + batch) * dim_frequence + frequence] = 0;
   for(int input_begin = 0; input_begin < dim_tau; input_begin++) {
-    int index = input_begin + t - dim_tau + 1;
+    int index = input_begin + timestep - dim_tau + 1;
     int filter_idx = dim_tau - 1 - input_begin;
     if (index >= 0 && filter_idx >= 0) {
-      output[t * dim_f + f] += back_prop[index * dim_f + f] * filter[filter_idx * dim_f + f];
+      output[(timestep * dim_batch + batch) * dim_frequence + frequence] += output_grad[(index * dim_batch + batch) * dim_frequence + frequence] * filter[filter_idx * dim_frequence + frequence];
     }
   }
 }
 
 template<typename T>
-__global__ void kernel_grad_filter(int dim_tau, int dim_f, int input_size, const T* input, const T* back_prop, T* output) {
-  int f = threadIdx.x;
+__global__ void kernel_grad_filter(int dim_batch, int dim_timestep, const T* input, const T* output_grad, T* output) {
+  int dim_frequence = blockDim.x;
+  int dim_tau = gridDim.x;
+  int frequence = threadIdx.x;
   int tau = blockIdx.x;
-  for (int t = 0; t < input_size - tau; t++) {
-    output[tau * dim_f + f] += back_prop[t * dim_f + f] * input[(t + tau) * dim_f + f];
+  for (int batch = 0; batch < dim_batch; batch++) {
+    for (int timestep = 0; timestep < dim_timestep - tau; timestep++) {
+      output[tau * dim_frequence + frequence] += output_grad[(timestep * dim_batch + batch) * dim_frequence + frequence] * input[((timestep + tau) * dim_batch + batch) * dim_frequence + frequence];
+    }
   }
 }
 
@@ -62,34 +70,24 @@ class LookaheadGradOp<T, 1> : public OpKernel {
                                                      &output_tensor));
     auto output = output_tensor->template tensor<T, 3>();
 
-    int dim_batch = input_tensor.dim_size(0);
-    int dim_t = input_tensor.dim_size(1);
-    int dim_f = input_tensor.dim_size(2);
+    int dim_timestep = input_tensor.dim_size(0);
+    int dim_batch = input_tensor.dim_size(1);
+    int dim_frequence = input_tensor.dim_size(2);
     int dim_tau = filter_tensor.dim_size(0);
-    cudaStream_t stream[dim_batch];
-    for (int i = 0; i < dim_batch; i++) {
-      cudaStreamCreate(&stream[i]);
-    }
-    for (int i = 0; i < dim_batch; i++) {
-      kernel_grad_input<T><<<dim_t, dim_f, 0, stream[i]>>>(dim_t, dim_f, dim_tau, &filter(0, 0), &output_grad(i, 0, 0), &output(i, 0, 0));
-    }
-    for (int i = 0; i < dim_batch; i++) {
-      cudaStreamSynchronize(stream[i]);
-      cudaStreamDestroy(stream[i]);
-    }
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+    dim3 grid(dim_timestep, dim_batch);
+    kernel_grad_input<T><<<grid, dim_frequence, 0, stream>>>(dim_tau, &filter(0, 0), &output_grad(0, 0, 0), &output(0, 0, 0));
+    cudaStreamSynchronize(stream);
     // Create filter grad output tensor
     OP_REQUIRES_OK(context, context->allocate_output(1, filter_tensor.shape(),
                                                      &output_tensor));
     auto output2 = output_tensor->template matrix<T>();
 
-    cudaStream_t streamx;
-    cudaStreamCreate(&streamx);
-    cudaMemset(&output2(0, 0), 0, dim_tau * dim_f * sizeof(T));
-    for (int i = 0; i < dim_batch; i++) {
-      kernel_grad_filter<T><<<dim_tau, dim_f, 0, streamx>>>(dim_tau, dim_f, dim_t, &input(i, 0, 0), &output_grad(i, 0, 0), &output2(0, 0));
-      cudaStreamSynchronize(streamx);
-    }
-    cudaStreamDestroy(streamx);
+    cudaMemset(&output2(0, 0), 0, dim_tau * dim_frequence * sizeof(T));
+    kernel_grad_filter<T><<<dim_tau, dim_frequence, 0, stream>>>(dim_batch, dim_timestep, &input(0, 0, 0), &output_grad(0, 0, 0), &output2(0, 0));
+    cudaStreamSynchronize(stream);
+    cudaStreamDestroy(stream);
   }
 };
 
