@@ -1,4 +1,5 @@
 #include "tensorflow/core/kernels/lookahead_ops.h"
+#include <cuda_runtime.h>
 
 using namespace tensorflow;
 

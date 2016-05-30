@@ -598,7 +598,7 @@ tf_kernel_library(
         "//tensorflow/core:warpctc_ops_op_lib",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
-        "//tensorflow/core/kernels/warp-ctc/tests:ctc_gpu",
+        "//tensorflow/core/kernels/warp-ctc/tests:warpctc",
     ],
     alwayslink = 1,
 )
