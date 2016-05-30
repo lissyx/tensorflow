@@ -3,7 +3,6 @@
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/numeric_op.h"
-#include <cuda_runtime.h>
 
 using namespace tensorflow;
 

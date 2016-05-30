@@ -1,6 +1,5 @@
-
-
 #include "tensorflow/core/kernels/lookahead_grad_op.h"
+#include <cuda_runtime.h>
 
 using namespace tensorflow;
 
