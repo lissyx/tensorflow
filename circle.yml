@@ -24,4 +24,4 @@ dependencies:
 test:
   override:
     - cat input | ./configure
-    - bazel test tensorflow/contrib/warpctc:all --test_output=all --copt=-DCTC_DISABLE_OMP --define CI=true --copt=-I/usr/local/lib/python2.7/dist-packages/numpy/core/include/ --copt=-w
+    - bazel test tensorflow/contrib/warpctc:all --test_output=all --copt=-DCTC_DISABLE_OMP --define CI=true --copt=-I/usr/local/lib/python2.7/dist-packages/numpy/core/include/ --copt=-w --spawn_strategy=standalone --genrule_strategy=standalone --privileged
