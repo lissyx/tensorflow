@@ -17,6 +17,7 @@ licenses(["notice"])  # Apache 2.0
 
 load(
     "//tensorflow:tensorflow.bzl",
+    "if_cuda",
     "tf_cc_test",
     "tf_cc_tests",
     "tf_copts",
@@ -738,8 +739,15 @@ tf_kernel_library(
         "//tensorflow/core:warpctc_ops_op_lib",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
-        "//tensorflow/core/kernels/warp-ctc/tests:ctc_gpu",
-    ],
+    ] + if_cuda([
+            "//tensorflow/core/kernels/warp-ctc/tests:ctc_gpu",
+            "//tensorflow/core/kernels/warp-ctc/include:libgpu",
+            "//tensorflow/core/kernels/warp-ctc/include/detail:libgpu",
+        ], [
+            "//tensorflow/core/kernels/warp-ctc/tests:ctc_cpu",
+            "//tensorflow/core/kernels/warp-ctc/include:libcpu",
+            "//tensorflow/core/kernels/warp-ctc/include/detail:libcpu",
+        ]),
     alwayslink = 1,
 )
 
