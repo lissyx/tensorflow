@@ -7,6 +7,12 @@ load("//tensorflow:workspace.bzl", "check_version", "tf_workspace")
 # require here.
 check_version("0.4.2")
 
+new_local_repository(
+    name = "arm_compiler",
+    path = "%%CT_ROOT_DIR%%",
+    build_file = "BUILD.arm_compiler",
+)
+
 # Uncomment and update the paths in these entries to build the Android demo.
 #android_sdk_repository(
 #    name = "androidsdk",

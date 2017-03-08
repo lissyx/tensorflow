@@ -1,0 +1,81 @@
+package(default_visibility = ['//visibility:public'])
+
+filegroup(
+  name = 'gcc',
+  srcs = [
+    'bin/%%CT_NAME%%-gcc',
+  ],
+)
+
+filegroup(
+  name = 'ar',
+  srcs = [
+    'bin/%%CT_NAME%%-ar',
+  ],
+)
+
+filegroup(
+  name = 'ld',
+  srcs = [
+    'bin/%%CT_NAME%%-ld',
+  ],
+)
+
+filegroup(
+  name = 'nm',
+  srcs = [
+    'bin/%%CT_NAME%%-nm',
+  ],
+)
+
+filegroup(
+  name = 'objcopy',
+  srcs = [
+    'bin/%%CT_NAME%%-objcopy',
+  ],
+)
+
+filegroup(
+  name = 'objdump',
+  srcs = [
+    'bin/%%CT_NAME%%-objdump',
+  ],
+)
+
+filegroup(
+  name = 'strip',
+  srcs = [
+    'bin/%%CT_NAME%%-strip',
+  ],
+)
+
+filegroup(
+  name = 'as',
+  srcs = [
+    'bin/%%CT_NAME%%-as',
+  ],
+)
+
+filegroup(
+  name = 'compiler_pieces',
+  srcs = glob([
+    '%%CT_NAME%%/**',
+    'libexec/**',
+    'lib/gcc/%%CT_NAME%%/**',
+    'include/**',
+  ]),
+)
+
+filegroup(
+  name = 'compiler_components',
+  srcs = [
+    ':gcc',
+    ':ar',
+    ':ld',
+    ':nm',
+    ':objcopy',
+    ':objdump',
+    ':strip',
+    ':as',
+  ],
+)

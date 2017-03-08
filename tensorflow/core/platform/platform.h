@@ -45,7 +45,7 @@ limitations under the License.
 
 // Since there's no macro for the Raspberry Pi, assume we're on a mobile
 // platform if we're compiling for the ARM CPU.
-#define IS_MOBILE_PLATFORM
+//#define IS_MOBILE_PLATFORM
 
 #else
 // If no platform specified, use:
